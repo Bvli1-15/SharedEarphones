@@ -115,6 +115,11 @@
     transition: transform .22s ease-in, opacity .18s ease;
 }
 #se-card.se-hidden { display: none; }
+/* 按住空白处可以上下拖；列表、歌词、横滑的标签还是照常滑 */
+#se-card { touch-action: none; }
+#se-card .se-lines, #se-card .se-rows { touch-action: pan-y; }
+#se-card .se-chips { touch-action: pan-x; }
+#se-card.se-dragging { transition: none; cursor: grabbing; user-select: none; -webkit-user-select: none; }
 #se-card.se-turn-out { transform: rotateY(90deg); }
 #se-card.se-turn-in { transition: none; transform: rotateY(-90deg); }
 
@@ -240,6 +245,16 @@
 #se-card .se-chips button.se-on { background: var(--se-solid); color: var(--se-solid-ink); }
 #se-card .se-mini-btn { width: 30px; height: 30px; flex: none; border-radius: 50%; display: flex !important; align-items: center; justify-content: center; background: var(--se-chip); color: var(--se-ink); font-size: 12px; }
 #se-card .se-mini-btn.se-done { background: var(--se-solid); color: var(--se-solid-ink); }
+/* 加载中：三个点轮流跳 */
+#se-card .se-dots { display: inline-flex; align-items: center; gap: 3px; height: 100%; }
+#se-card .se-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: se-dot 1s ease-in-out infinite; }
+#se-card .se-dots i:nth-child(2) { animation-delay: .15s; }
+#se-card .se-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes se-dot {
+    0%, 70%, 100% { opacity: .3; transform: translateY(0); }
+    35% { opacity: 1; transform: translateY(-3px); }
+}
+@keyframes se-dot-fade { 0%, 70%, 100% { opacity: .3; } 35% { opacity: 1; } }
 #se-card .se-more-results { display: block !important; width: 100%; text-align: center; padding: 11px 0; font-size: 14px; color: var(--se-sub); }
 
 /* ---------- 背面 ---------- */
@@ -280,7 +295,15 @@
 #se-card .se-label:focus, #se-card .se-longtext:focus { background: rgba(255, 255, 255, .22); -webkit-line-clamp: unset; overflow: visible; }
 #se-card .se-longtext:empty::before { content: attr(data-placeholder); opacity: .5; }
 
+/* ---------- 扩展设置面板的开关（和预设里提示词的开关一样） ---------- */
+.se-settings .se-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.se-settings .se-switch-row:focus-visible { outline: 1px solid var(--SmartThemeQuoteColor); outline-offset: 2px; border-radius: 4px; }
+.se-settings .se-switch { flex: none; font-size: 1.35em; opacity: .55; transition: color .15s, opacity .15s; }
+.se-settings .se-switch-row.se-on .se-switch { color: var(--SmartThemeQuoteColor); opacity: 1; }
+.se-settings .se-switch-head { padding-top: 2px; }
+
 @media (prefers-reduced-motion: reduce) {
     #se-card { transition: none; }
+    #se-card .se-dots i { animation-name: se-dot-fade; }
     #se-root.se-playing #se-card .se-flip i { animation: none; }
 }

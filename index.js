@@ -20,6 +20,7 @@ const DEFAULTS = Object.freeze({
     ballVisible: true,
     ballPos: null,          // {x, y}：球中心在屏幕里的比例
     ballIcon: '',           // 自定义图标（压缩后的 dataURL）
+    cardY: null,            // 卡片中心在屏幕高度里的比例；null 就是正中间
     material: 'frost',      // frost 磨砂 / liquid 液态玻璃
     tint: 'auto',           // auto 跟随酒馆主题 / light / dark
     playMode: 'order',      // order 顺序 / one 单曲循环 / shuffle 随机
@@ -160,6 +161,7 @@ const ICON = {
     edit: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/></svg>',
     search: '<svg width="20" height="20" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8"/><path d="M15 15l5 5" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
+const LOADING = '<span class="se-dots" aria-label="加载中"><i></i><i></i><i></i></span>';
 const BARS = [3, 5, 3, 9, 14, 9, 6, 4].map(h => `<i style="height:${h}px"></i>`).join('');
 const progHTML = '<div class="se-prog"><span class="se-cur">0:00</span><div class="se-track"><span><b></b></span></div><span class="se-left">-0:00</span></div>';
 
@@ -300,7 +302,8 @@ function applyLook() {
     }
     el.root.classList.toggle('se-dark', dark);
     el.ball.classList.toggle('se-hidden', !settings.ballVisible);
-    if (!settings.ballVisible) el.card.classList.add('se-hidden');
+    // 关掉悬浮球时卡片留在屏幕上（没有球可以点开它了）
+    if (!settings.ballVisible && el.card.classList.contains('se-hidden')) toggleCard(true);
     el.ball.innerHTML = settings.ballIcon ? `<img src="${settings.ballIcon}" alt="">` : ICON.note;
     placeBall();
 }
@@ -316,16 +319,23 @@ function placeBall() {
     if (!el.card.classList.contains('se-hidden')) placeCard();
 }
 
-function placeCard() {
-    const b = el.ball.getBoundingClientRect();
+/** 酒馆顶栏的底边：卡片最高只能到这里。 */
+function cardMinTop() {
+    const bar = document.getElementById('top-settings-holder') || document.getElementById('top-bar');
+    const r = bar?.getBoundingClientRect();
+    return (r && r.height ? Math.max(r.bottom, 0) : 0) + 6;
+}
+
+/** 卡片水平居中；centerY 不给就用记住的位置（默认屏幕正中）。 */
+function placeCard(centerY) {
+    if (el.card.classList.contains('se-hidden')) return;
     const W = window.innerWidth, H = window.innerHeight;
     const cw = el.card.offsetWidth, ch = el.card.offsetHeight;
-    const left = Math.min(Math.max(b.left + b.width / 2 - cw / 2, 8), W - cw - 8);
-    let top;
-    if (b.top + b.height / 2 < H / 2) top = Math.min(b.bottom + 10, H - ch - 8);
-    else top = Math.max(b.top - 10 - ch, 8);
-    el.card.style.left = left + 'px';
-    el.card.style.top = Math.max(top, 8) + 'px';
+    const minTop = cardMinTop();
+    const maxTop = Math.max(minTop, H - ch - 8);
+    const cy = centerY ?? (settings.cardY ?? 0.5) * H;
+    el.card.style.left = Math.max((W - cw) / 2, 0) + 'px';
+    el.card.style.top = Math.min(Math.max(cy - ch / 2, minTop), maxTop) + 'px';
 }
 
 // ======================================================
@@ -345,7 +355,6 @@ function bindUI() {
         drag.moved = true;
         el.ball.style.left = (drag.ox + dx) + 'px';
         el.ball.style.top = (drag.oy + dy) + 'px';
-        if (!el.card.classList.contains('se-hidden')) placeCard();
     });
     el.ball.addEventListener('pointerup', () => {
         if (!drag) return;
@@ -362,6 +371,40 @@ function bindUI() {
     el.ball.addEventListener('pointercancel', () => { drag = null; });
     el.ball.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCard(); } });
     window.addEventListener('resize', placeBall);
+
+    // 卡片：按住空白处（封面、歌名、标题栏）上下拖；按钮、进度条、列表、歌词这些地方不算
+    const NO_DRAG = 'button, input, select, textarea, a, label, [contenteditable], .se-track, .se-lines, .se-rows, .se-chips, .se-seg, .se-opts';
+    let cdrag = null;
+    el.card.addEventListener('pointerdown', e => {
+        if (e.button > 0 || e.target.closest(NO_DRAG)) return;
+        const r = el.card.getBoundingClientRect();
+        cdrag = { id: e.pointerId, sy: e.clientY, cy: r.top + r.height / 2, moved: false };
+    });
+    el.card.addEventListener('pointermove', e => {
+        if (!cdrag || e.pointerId !== cdrag.id) return;
+        const dy = e.clientY - cdrag.sy;
+        if (!cdrag.moved) {
+            if (Math.abs(dy) < 6) return;
+            cdrag.moved = true;
+            el.card.setPointerCapture(e.pointerId);
+            el.card.classList.add('se-dragging');
+        }
+        placeCard(cdrag.cy + dy);
+    });
+    const endCardDrag = () => {
+        if (!cdrag) return;
+        if (cdrag.moved) {
+            const r = el.card.getBoundingClientRect();
+            settings.cardY = (r.top + r.height / 2) / window.innerHeight;
+            save();
+            el.card.classList.remove('se-dragging');
+        }
+        cdrag = null;
+    };
+    el.card.addEventListener('pointerup', endCardDrag);
+    el.card.addEventListener('pointercancel', endCardDrag);
+    // 换页、歌词加载完，卡片高度会变：重新摆一下，保证不出屏、不盖顶栏
+    if (window.ResizeObserver) new ResizeObserver(() => { if (!cdrag?.moved) placeCard(); }).observe(el.card);
 
     // 卡片里的按钮
     el.card.addEventListener('click', e => {
@@ -437,7 +480,7 @@ function toggleCard(force) {
         if (el.card.dataset.view === 'back') refreshBack();
         render();
         placeCard();
-        requestAnimationFrame(placeCard);
+        requestAnimationFrame(() => placeCard());
     }
     syncNotesLoop();
 }
@@ -1104,7 +1147,7 @@ async function saveFreeTrack(i, btn) {
     const m = music.items[i];
     if (!m || btn.classList.contains('se-done') || btn.dataset.busy) return;
     btn.dataset.busy = '1';
-    btn.textContent = '…';
+    btn.innerHTML = LOADING;
     await db.requestPersist();
     const extra = { url: m.url, license: m.license, licenseUrl: m.licenseUrl, pageUrl: m.pageUrl, source: m.source, noEnrich: true };
     let id = null;
@@ -1198,7 +1241,7 @@ async function toggleGDPreview(i) {
     if (!audio.paused) audio.pause();
     gdPreviewIdx = i;
     const b = $(`[data-gprev="${i}"]`, el.gdRows);
-    if (b) b.textContent = '…';
+    if (b) b.innerHTML = LOADING;
     let url = '';
     try { url = await resolveGD(m); } catch (e) { toast('warning', e.message); }
     if (gdPreviewIdx !== i) return; // 等链接的时候又点了别的
@@ -1212,7 +1255,7 @@ async function saveGDTrack(i, btn) {
     const m = gdState.items[i];
     if (!m || btn.classList.contains('se-done') || btn.dataset.busy) return;
     btn.dataset.busy = '1';
-    btn.textContent = '…';
+    btn.innerHTML = LOADING;
     // 只记来源和 ID，不下载音频
     const id = uid();
     library.index.push({
@@ -1749,8 +1792,8 @@ function buildSettingsPanel() {
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
-      <label class="checkbox_label"><input type="checkbox" id="se_ball_visible"><span>显示悬浮球</span></label>
-      <small>也可以用快速回复按钮：<code>/musicball</code>（藏/显切换），<code>/musicball hide</code>，<code>/musicball show</code></small>
+      <div class="se-switch-row" id="se_ball_visible" role="switch" tabindex="0"><span>显示悬浮球</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
+      <small>也可以用快速回复按钮：<code>/musicball</code>（藏/显切换），<code>/musicball hide</code>，<code>/musicball show</code>。关掉悬浮球时卡片会留在屏幕上。</small>
       <hr>
       <div class="flex-container alignitemscenter">
         <span>悬浮球图标</span>
@@ -1759,13 +1802,12 @@ function buildSettingsPanel() {
       </div>
       <label for="se_material">质感</label>
       <select id="se_material" class="text_pole"><option value="frost">磨砂</option><option value="liquid">液态玻璃</option></select>
-      <label class="checkbox_label"><input type="checkbox" id="se_auto_lyrics"><span>导入时自动找歌词（LRCLIB）</span></label>
-      <label class="checkbox_label"><input type="checkbox" id="se_auto_cover"><span>导入时自动补封面</span></label>
+      <div class="se-switch-row" id="se_auto_lyrics" role="switch" tabindex="0"><span>导入时自动找歌词（LRCLIB）</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
+      <div class="se-switch-row" id="se_auto_cover" role="switch" tabindex="0"><span>导入时自动补封面</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <small>这两项需要联网，找到的东西会存进浏览器，以后离线也能看。</small>
       <div class="menu_button" id="se_fill">补全缺的歌词和封面</div>
       <hr>
-      <b>让 char 听见</b>
-      <label class="checkbox_label"><input type="checkbox" id="se_listen"><span>把正在放的歌告诉 char（暂停时不告诉）</span></label>
+      <div class="se-switch-row se-switch-head" id="se_listen" role="switch" tabindex="0" aria-label="让 char 听见"><b>让 char 听见</b><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <label for="se_listen_mode">给模型看什么</label>
       <select id="se_listen_mode" class="text_pole">
         <option value="vibe">只给氛围（每轮约 40 token）</option>
@@ -1779,7 +1821,7 @@ function buildSettingsPanel() {
         <option value="model">模型判断（每首歌导入时花一次，更准）</option>
       </select>
       <div class="menu_button" id="se_tag_all">给没有标签的歌生成标签</div>
-      <label class="checkbox_label"><input type="checkbox" id="se_switch"><span>char 根据剧情换歌</span></label>
+      <div class="se-switch-row" id="se_switch" role="switch" tabindex="0"><span>char 根据剧情换歌</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <div class="flex-container alignitemscenter"><span>换过之后隔</span><input type="number" id="se_cooldown" class="text_pole" min="1" max="20" style="width:4em"><span>轮才能再换</span></div>
       <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点 ··· → 改歌名 里手动改。</small>
       <hr>
@@ -1801,27 +1843,19 @@ function buildSettingsPanel() {
     if (!host) return;
     host.insertAdjacentHTML('beforeend', html);
 
-    const vis = $('#se_ball_visible');
-    vis.checked = settings.ballVisible;
-    vis.addEventListener('change', () => setBallVisible(vis.checked));
+    paintBallSwitch = bindSwitch('#se_ball_visible', () => settings.ballVisible, v => setBallVisible(v));
     const mat = $('#se_material');
     mat.value = settings.material;
     mat.addEventListener('change', () => { settings.material = mat.value; save(); applyLook(); });
-    const al = $('#se_auto_lyrics');
-    al.checked = settings.autoLyrics;
-    al.addEventListener('change', () => { settings.autoLyrics = al.checked; save(); });
-    const ac = $('#se_auto_cover');
-    ac.checked = settings.autoCover;
-    ac.addEventListener('change', () => { settings.autoCover = ac.checked; save(); });
+    bindSwitch('#se_auto_lyrics', () => settings.autoLyrics, v => { settings.autoLyrics = v; save(); });
+    bindSwitch('#se_auto_cover', () => settings.autoCover, v => { settings.autoCover = v; save(); });
     $('#se_fill').addEventListener('click', () => {
         const ids = library.index.filter(s => !s.noEnrich && ((!s.hasLyrics && !s.instrumental) || !s.hasCover)).map(s => s.id);
         if (!ids.length) { toast('info', '每首歌都齐了'); return; }
         toast('info', `开始给 ${ids.length} 首歌补全，在后台慢慢来`);
         enrich(ids);
     });
-    const li = $('#se_listen');
-    li.checked = settings.listen;
-    li.addEventListener('change', () => { settings.listen = li.checked; save(); updateInjection(); });
+    bindSwitch('#se_listen', () => settings.listen, v => { settings.listen = v; save(); updateInjection(); });
     const lm = $('#se_listen_mode');
     lm.value = settings.listenMode;
     lm.addEventListener('change', () => { settings.listenMode = lm.value; save(); updateInjection(); });
@@ -1835,9 +1869,7 @@ function buildSettingsPanel() {
         const n = await tagSongs(ids);
         if (n != null) toast('success', `生成了 ${n} 首歌的标签`); // 正在打别的标签时会排队，不报数
     });
-    const sw = $('#se_switch');
-    sw.checked = settings.autoSwitch;
-    sw.addEventListener('change', () => { settings.autoSwitch = sw.checked; save(); updateInjection(); });
+    bindSwitch('#se_switch', () => settings.autoSwitch, v => { settings.autoSwitch = v; save(); updateInjection(); });
     const cd = $('#se_cooldown');
     cd.value = settings.switchCooldown;
     cd.addEventListener('change', () => { settings.switchCooldown = Math.min(Math.max(Number(cd.value) || 3, 1), 20); cd.value = settings.switchCooldown; save(); });
@@ -1887,12 +1919,31 @@ function buildSettingsPanel() {
     });
 }
 
+/** 设置面板里的开关（和预设里提示词的开关同一个样子）。返回重画函数。 */
+function bindSwitch(sel, get, set) {
+    const row = $(sel);
+    if (!row) return () => {};
+    const icon = $('.se-switch', row);
+    const paint = () => {
+        const on = !!get();
+        icon.classList.toggle('fa-toggle-on', on);
+        icon.classList.toggle('fa-toggle-off', !on);
+        row.classList.toggle('se-on', on);
+        row.setAttribute('aria-checked', String(on));
+    };
+    const flip = () => { set(!get()); paint(); };
+    row.addEventListener('click', flip);
+    row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+    paint();
+    return paint;
+}
+let paintBallSwitch = () => {};
+
 function setBallVisible(v) {
     settings.ballVisible = v;
     save();
     applyLook();
-    const box = document.getElementById('se_ball_visible');
-    if (box) box.checked = v;
+    paintBallSwitch();
 }
 
 function shrinkImage(file, size, as = 'dataurl') {
