@@ -136,3 +136,162 @@ export function parseLyrics(text) {
     }
     return { timed: false, lines };
 }
+
+// ======================================================
+// 其他格式：m4a / flac / ogg / wav
+// ======================================================
+
+const u32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+const u32le = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+const ascii = (b, o, n) => String.fromCharCode(...b.subarray(o, o + n));
+const utf8 = (bytes) => new TextDecoder('utf-8').decode(bytes);
+
+async function readBytes(file, start, end) {
+    return new Uint8Array(await file.slice(start, end).arrayBuffer());
+}
+
+// Vorbis 注释：flac 和 ogg 共用
+function parseVorbisComments(b, o) {
+    const out = {};
+    const vlen = u32le(b, o); o += 4 + vlen;
+    const n = u32le(b, o); o += 4;
+    for (let i = 0; i < n && o + 4 <= b.length; i++) {
+        const len = u32le(b, o); o += 4;
+        if (o + len > b.length) break;
+        const s = utf8(b.subarray(o, o + len)); o += len;
+        const eq = s.indexOf('=');
+        if (eq < 0) continue;
+        const k = s.slice(0, eq).toUpperCase(), v = s.slice(eq + 1).trim();
+        if (k === 'TITLE' && !out.title) out.title = v;
+        else if (k === 'ARTIST' && !out.artist) out.artist = v;
+        else if ((k === 'LYRICS' || k === 'UNSYNCEDLYRICS' || k === 'SYNCEDLYRICS') && !out.lyrics) out.lyrics = v;
+    }
+    return out;
+}
+
+async function readFLAC(file) {
+    const out = {};
+    let p = 4;
+    for (let guard = 0; guard < 64; guard++) {
+        const h = await readBytes(file, p, p + 4);
+        if (h.length < 4) break;
+        const last = h[0] & 0x80, type = h[0] & 0x7f, len = (h[1] << 16) | (h[2] << 8) | h[3];
+        if (type === 4 || (type === 6 && !out.cover)) {
+            const b = await readBytes(file, p + 4, p + 4 + len);
+            if (type === 4) Object.assign(out, parseVorbisComments(b, 0), out);
+            else {
+                let o = 4;
+                const ml = u32(b, o); o += 4; const mime = ascii(b, o, ml); o += ml;
+                const dl = u32(b, o); o += 4 + dl + 16;
+                const size = u32(b, o); o += 4;
+                if (size > 100) out.cover = new Blob([b.slice(o, o + size)], { type: mime || 'image/jpeg' });
+            }
+        }
+        p += 4 + len;
+        if (last) break;
+    }
+    return out;
+}
+
+async function readOGG(file) {
+    // 只在开头 128KB 里找注释块，够用了
+    const b = await readBytes(file, 0, 131072);
+    const find = (sig) => {
+        outer: for (let i = 0; i < b.length - sig.length; i++) {
+            for (let j = 0; j < sig.length; j++) if (b[i + j] !== sig[j]) continue outer;
+            return i + sig.length;
+        }
+        return -1;
+    };
+    let o = find([0x4f, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73]); // OpusTags
+    if (o < 0) o = find([0x03, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73]); // \x03vorbis
+    if (o < 0) return {};
+    try { return parseVorbisComments(b, o); } catch { return {}; }
+}
+
+async function readMP4(file) {
+    const out = {};
+    // 在顶层找 moov（有的文件 moov 在末尾）
+    let p = 0, moov = null;
+    for (let guard = 0; guard < 200 && p < file.size; guard++) {
+        const h = await readBytes(file, p, p + 16);
+        if (h.length < 8) break;
+        let size = u32(h, 0);
+        const type = ascii(h, 4, 4);
+        if (size === 1) size = Number((BigInt(u32(h, 8)) << 32n) | BigInt(u32(h, 12)));
+        else if (size === 0) size = file.size - p;
+        if (type === 'moov') { moov = await readBytes(file, p + 8, p + size); break; }
+        if (size < 8) break;
+        p += size;
+    }
+    if (!moov) return out;
+    const walk = (b, start, end, path) => {
+        let o = start;
+        while (o + 8 <= end) {
+            const size = u32(b, o), type = ascii(b, o + 4, 4);
+            if (size < 8 || o + size > end) break;
+            const body = o + 8;
+            if (path === 'ilst') {
+                // 每个条目里有一个 data 子块
+                let d = body;
+                while (d + 16 <= o + size) {
+                    const ds = u32(b, d), dt = ascii(b, d + 4, 4);
+                    if (ds < 16) break;
+                    if (dt === 'data') {
+                        const kind = u32(b, d + 8) & 0xffffff;
+                        const payload = b.subarray(d + 16, d + ds);
+                        if (type === '\u00a9nam') out.title = utf8(payload);
+                        else if (type === '\u00a9ART') out.artist = utf8(payload);
+                        else if (type === 'aART' && !out.artist) out.artist = utf8(payload);
+                        else if (type === '\u00a9lyr') out.lyrics = utf8(payload);
+                        else if (type === 'covr' && !out.cover) out.cover = new Blob([payload.slice()], { type: kind === 14 ? 'image/png' : 'image/jpeg' });
+                    }
+                    d += ds;
+                }
+            } else if (type === 'udta' || type === 'ilst') walk(b, body, o + size, type);
+            else if (type === 'meta') walk(b, body + 4, o + size, 'meta'); // meta 有 4 字节版本号
+            o += size;
+        }
+    };
+    walk(moov, 0, moov.length, 'moov');
+    return out;
+}
+
+async function readWAV(file) {
+    const out = {};
+    const b = await readBytes(file, 0, Math.min(file.size, 262144));
+    let o = 12;
+    while (o + 8 <= b.length) {
+        const id = ascii(b, o, 4), size = u32le(b, o + 4);
+        if (id === 'LIST' && ascii(b, o + 8, 4) === 'INFO') {
+            let q = o + 12;
+            while (q + 8 <= o + 8 + size && q + 8 <= b.length) {
+                const k = ascii(b, q, 4), n = u32le(b, q + 4);
+                const v = clean(utf8(b.subarray(q + 8, q + 8 + n)));
+                if (k === 'INAM') out.title = v;
+                if (k === 'IART') out.artist = v;
+                q += 8 + n + (n & 1);
+            }
+        }
+        o += 8 + size + (size & 1);
+    }
+    return out;
+}
+
+/**
+ * 按文件开头的特征判断格式，读歌名、歌手、封面、歌词。读不到就返回空对象。
+ */
+export async function readTags(file) {
+    try {
+        const h = await readBytes(file, 0, 12);
+        const sig = ascii(h, 0, 4);
+        if (sig.startsWith('ID3')) return await readID3(file);
+        if (sig === 'fLaC') return await readFLAC(file);
+        if (sig === 'OggS') return await readOGG(file);
+        if (sig === 'RIFF' && ascii(h, 8, 4) === 'WAVE') return await readWAV(file);
+        if (ascii(h, 4, 4) === 'ftyp') return await readMP4(file);
+    } catch (e) {
+        console.warn('[共享耳机] 读取标签失败', e);
+    }
+    return {};
+}
