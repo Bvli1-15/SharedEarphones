@@ -133,7 +133,8 @@
 #se-card[data-view="list"] .se-list,
 #se-card[data-view="back"] .se-back,
 #se-card[data-view="import"] .se-import,
-#se-card[data-view="lrcsearch"] .se-lrcsearch { display: block; }
+#se-card[data-view="lrcsearch"] .se-lrcsearch,
+#se-card[data-view="musicsearch"] .se-musicsearch { display: block; }
 
 #se-card .se-top { display: flex; align-items: center; gap: 12px; }
 #se-card .se-cover {
@@ -231,6 +232,15 @@
 }
 #se-card .se-searchbar input:focus { border-color: var(--se-icon-sub); }
 #se-card .se-searchbar button { padding: 0 16px; border-radius: 10px; background: var(--se-solid); color: var(--se-solid-ink); font-size: 14px; display: flex; align-items: center; }
+
+/* ---------- 在线找歌 ---------- */
+#se-card .se-chips { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+#se-card .se-chips::-webkit-scrollbar { display: none; }
+#se-card .se-chips button { flex: none; font-size: 13px; padding: 5px 11px; border-radius: 999px; background: var(--se-chip); color: var(--se-ink); white-space: nowrap; }
+#se-card .se-chips button.se-on { background: var(--se-solid); color: var(--se-solid-ink); }
+#se-card .se-mini-btn { width: 30px; height: 30px; flex: none; border-radius: 50%; display: flex !important; align-items: center; justify-content: center; background: var(--se-chip); color: var(--se-ink); font-size: 12px; }
+#se-card .se-mini-btn.se-done { background: var(--se-solid); color: var(--se-solid-ink); }
+#se-card .se-more-results { display: block !important; width: 100%; text-align: center; padding: 11px 0; font-size: 14px; color: var(--se-sub); }
 
 /* ---------- 背面 ---------- */
 #se-card .se-back { padding: 12px 10px 10px; }
