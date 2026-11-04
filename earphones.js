@@ -3,14 +3,14 @@ export const BACK_VIEWBOX = '-143 -5 1087 795';
 export const BACK_SVG = `<defs>
   <filter id="se-bud" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#5a4a3a" flood-opacity=".18"/></filter>
   <filter id="se-ring" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity=".08"/></filter>
-<filter id="se-cs" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#000" flood-opacity=".28"/></filter>
+<filter id="se-cs" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="1.2" stdDeviation="1.4" flood-color="#3a3026" flood-opacity=".42"/></filter>
 <g id="se-n-quarter"><ellipse cx="9" cy="34" rx="8" ry="5.6" transform="rotate(-22 9 34)"/><rect x="15" y="4" width="2.4" height="30"/></g>
 <g id="se-n-half"><ellipse cx="9" cy="34" rx="7" ry="4.6" transform="rotate(-22 9 34)" fill="none" stroke-width="2.4" stroke="currentColor"/><rect x="15" y="4" width="2.4" height="30"/></g>
 <g id="se-n-eighth"><use href="#se-n-quarter"/><path d="M15 4 C18 9 26 12 23 24 C23 16 20 13 15 11 Z"/></g>
 <g id="se-n-sixteenth"><use href="#se-n-quarter"/><path d="M15 4 C18 8 25 10 23 19 C22 13 19 11 15 10 Z"/><path d="M15 11 C18 15 25 17 23 26 C22 20 19 18 15 17 Z"/></g>
 <g id="se-n-pair"><ellipse cx="9" cy="34" rx="8" ry="5.6" transform="rotate(-22 9 34)"/><ellipse cx="33" cy="34" rx="8" ry="5.6" transform="rotate(-22 33 34)"/><rect x="15" y="5" width="2.4" height="29"/><rect x="39" y="5" width="2.4" height="29"/><rect x="15" y="4" width="26.4" height="5"/></g>
 <g id="se-n-four"><ellipse cx="9" cy="34" rx="7" ry="5" transform="rotate(-22 9 34)"/><ellipse cx="27" cy="34" rx="7" ry="5" transform="rotate(-22 27 34)"/><ellipse cx="45" cy="34" rx="7" ry="5" transform="rotate(-22 45 34)"/><ellipse cx="63" cy="34" rx="7" ry="5" transform="rotate(-22 63 34)"/><rect x="14.5" y="5" width="2.2" height="29"/><rect x="32.5" y="5" width="2.2" height="29"/><rect x="50.5" y="5" width="2.2" height="29"/><rect x="68.5" y="5" width="2.2" height="29"/><rect x="14.5" y="4" width="56.2" height="4.4"/><rect x="14.5" y="11" width="56.2" height="4.4"/></g>
-<clipPath id="se-avclipL"><circle cx="235" cy="232" r="162"/></clipPath><clipPath id="se-avclipR"><circle cx="565" cy="226" r="162"/></clipPath>
+<clipPath id="se-avclipL"><circle cx="240" cy="232" r="162"/></clipPath><clipPath id="se-avclipR"><circle cx="560" cy="226" r="162"/></clipPath>
 <path id="se-shape-spl" d="M755,1050 761,1051 767,1054 769,1057 771,1063 772,1069 772,1075 772,1082 771,1086 771,1090 770,1094 769,1100 767,1106 764,1110 760,1114 754,1115 750,1113 745,1109 742,1104 741,1100 740,1094 739,1090 739,1086 738,1082 738,1078 738,1072 739,1066 740,1060 743,1054 746,1052 752,1050 754,1050 Z"/>
 <path id="se-shape-left" d="M235,382 230,380 225,378 219,378 214,378 208,378 203,379 196,380 191,382 187,383 182,385 178,388 175,390 171,393 169,396 166,399 164,402 163,406 162,410 161,414 160,418 160,422 160,426 160,430 161,434 163,441 166,448 170,452 174,457 178,462 180,466 181,470 182,476 182,481 183,486 183,492 184,497 184,503 185,508 185,513 186,518 186,524 186,528 187,533 187,537 188,541 188,547 189,553 191,559 195,563 200,563 204,558 206,552 206,548 207,544 207,539 207,535 208,530 208,526 209,521 209,515 210,510 210,505 211,499 212,494 212,490 214,485 214,481 216,477 217,473 219,469 221,466 223,463 227,460 230,458 234,457 239,455 243,454 246,451 250,449 253,446 257,442 262,437 265,433 266,429 266,424 264,418 261,412 259,408 256,405 254,402 251,398 248,395 246,392 243,389 240,386 238,384 Z"/>
 <path id="se-shape-right" d="M1275,372 1280,370 1285,368 1291,368 1296,368 1302,368 1307,369 1314,370 1319,372 1323,373 1328,375 1332,378 1335,380 1339,383 1341,386 1344,389 1346,392 1347,396 1348,400 1349,404 1350,408 1350,412 1350,416 1350,420 1349,424 1347,431 1344,438 1340,442 1336,447 1332,452 1330,456 1329,460 1328,466 1328,471 1327,476 1327,482 1326,487 1326,493 1325,498 1325,503 1324,508 1324,514 1324,518 1323,523 1323,527 1322,531 1322,537 1321,543 1319,549 1315,553 1310,553 1306,548 1304,542 1304,538 1303,534 1303,529 1303,525 1302,520 1302,516 1301,511 1301,505 1300,500 1300,495 1299,489 1298,484 1298,480 1296,475 1296,471 1294,467 1293,463 1291,459 1289,456 1287,453 1283,450 1280,448 1276,447 1271,445 1267,444 1264,441 1260,439 1257,436 1253,432 1248,427 1245,423 1244,419 1244,414 1246,408 1249,402 1251,398 1254,395 1256,392 1259,388 1262,385 1264,382 1267,379 1270,376 1272,374 Z"/>
@@ -35,7 +35,7 @@ export const BACK_SVG = `<defs>
   <use href="#se-shape-right" fill="#fff" transform="translate(-4,-4)" clip-path="url(#se-clip-right)"/>
   <ellipse cx="1334" cy="418" rx="4.5" ry="2.6" fill="#B9B2AA" transform="rotate(60 1334 418)"/>
 </g></g>
-<circle cx="235" cy="232" r="163" fill="#fff" stroke="#E6E6E6" stroke-width="1.4" filter="url(#se-ring)"/>
-<image id="se-avL" x="72" y="69" width="326" height="326" preserveAspectRatio="xMidYMid slice" clip-path="url(#se-avclipL)"/>
-<circle cx="565" cy="226" r="163" fill="#fff" stroke="#E6E6E6" stroke-width="1.4" filter="url(#se-ring)"/>
-<image id="se-avR" x="402" y="63" width="326" height="326" preserveAspectRatio="xMidYMid slice" clip-path="url(#se-avclipR)"/>`;
+<circle cx="240" cy="232" r="163" fill="#fff" stroke="#E6E6E6" stroke-width="1.4" filter="url(#se-ring)"/>
+<image id="se-avL" x="77" y="69" width="326" height="326" preserveAspectRatio="xMidYMid slice" clip-path="url(#se-avclipL)"/>
+<circle cx="560" cy="226" r="163" fill="#fff" stroke="#E6E6E6" stroke-width="1.4" filter="url(#se-ring)"/>
+<image id="se-avR" x="397" y="63" width="326" height="326" preserveAspectRatio="xMidYMid slice" clip-path="url(#se-avclipR)"/>`;

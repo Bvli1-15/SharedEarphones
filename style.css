@@ -9,7 +9,7 @@
     --se-ink: #1C1C1E;
     --se-sub: rgba(60, 60, 67, .62);
     --se-note: #2E2925;
-    --se-tint: rgba(255, 255, 255, .34);
+    --se-tint: rgba(255, 255, 255, .4);
     --se-tint-liquid: rgba(255, 255, 255, .12);
     --se-rim: rgba(255, 255, 255, .55);
     --se-track: rgba(60, 60, 67, .18);
@@ -49,15 +49,16 @@
     position: absolute;
     pointer-events: auto;
     background: var(--se-tint);
-    -webkit-backdrop-filter: blur(26px) saturate(170%);
-    backdrop-filter: blur(26px) saturate(170%);
+    /* 酒馆开了「快速 UI 模式」会给所有元素强制去掉毛玻璃，这里用 !important 把插件自己的玻璃留住 */
+    -webkit-backdrop-filter: blur(26px) saturate(170%) !important;
+    backdrop-filter: blur(26px) saturate(170%) !important;
     box-shadow: 0 16px 44px rgba(0, 0, 0, .16);
 }
 
 #se-root.se-liquid .se-glass {
     background: var(--se-tint-liquid);
-    -webkit-backdrop-filter: blur(7px) saturate(190%) brightness(1.06);
-    backdrop-filter: blur(7px) saturate(190%) brightness(1.06);
+    -webkit-backdrop-filter: blur(7px) saturate(190%) brightness(1.06) !important;
+    backdrop-filter: blur(7px) saturate(190%) brightness(1.06) !important;
     box-shadow: inset 0 0 18px rgba(255, 255, 255, .14), inset 0 0 3px rgba(255, 255, 255, .18), 0 16px 40px rgba(0, 0, 0, .16);
 }
 
