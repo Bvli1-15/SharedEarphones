@@ -1,8 +1,11 @@
-// 共享耳机 · 第一步：播放器本体
+// 共享耳机 · 播放器本体
 // 悬浮球、卡片正面、歌词、歌单、背面耳机线，歌存在浏览器里。
+// 导入：文件（多种格式、视频取声音）、zip 压缩包、链接、拖拽；联网自动配歌词（LRCLIB）和封面。
 
 import { BACK_SVG, BACK_VIEWBOX } from './earphones.js';
-import { readID3, guessFromFilename, normalizeName, parseLyrics } from './parsers.js';
+import { readTags, guessFromFilename, normalizeName, parseLyrics } from './parsers.js';
+import { listZip, extractZip } from './zip.js';
+import { findLyrics, findCover, searchLyrics } from './online.js';
 import * as db from './db.js';
 
 const MODULE = 'shared_earphones';
@@ -19,7 +22,17 @@ const DEFAULTS = Object.freeze({
     listId: ALL,            // 正在播放哪个歌单
     songId: null,           // 上次放到哪首
     texts: {},              // 每个角色背面的三行字
+    autoLyrics: true,       // 导入时自动去 LRCLIB 找歌词
+    autoCover: true,        // 导入时自动补封面
 });
+
+const AUDIO_EXT = /\.(mp3|m4a|aac|flac|wav|wave|ogg|oga|opus|webm|mp4|m4v|mov|aif|aiff|caf|alac|wma)$/i;
+const MIME_BY_EXT = {
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', wav: 'audio/wav', wave: 'audio/wav',
+    ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', mp4: 'video/mp4', m4v: 'video/mp4',
+    mov: 'video/quicktime', aif: 'audio/aiff', aiff: 'audio/aiff', caf: 'audio/x-caf',
+};
+const FILE_ACCEPT = 'audio/*,video/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus,.webm,.mp4,.mov,.aiff,.lrc,.zip';
 
 const ctx = () => SillyTavern.getContext();
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -35,6 +48,9 @@ let lyricData = null;       // 当前歌的歌词
 let lyricIdx = -1;
 let userScrolledAt = 0;
 let openListId = ALL;       // 歌单详情页正在看的歌单
+let importTarget = null;    // 导入的歌要不要顺便放进某个歌单
+let lrcTargetId = null;     // 在线找歌词是给哪首歌找
+let enriching = false;
 
 const el = {};              // 常用元素
 
@@ -123,6 +139,7 @@ const ICON = {
     pause: '<svg width="26" height="32" viewBox="0 0 24 30"><rect x="3" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/><rect x="15" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/></svg>',
     lyr: '<svg width="28" height="28" viewBox="0 0 24 24"><path d="M4 5h16a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0120 17h-9l-5 4v-4H4a1.5 1.5 0 01-1.5-1.5v-9A1.5 1.5 0 014 5z" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 9.5h2.5v2.2c0 1.2-.7 2-1.8 2.3M13.5 9.5H16v2.2c0 1.2-.7 2-1.8 2.3" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.6" stroke-linecap="round"/></svg>',
     edit: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    search: '<svg width="20" height="20" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8"/><path d="M15 15l5 5" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 const BARS = [3, 5, 3, 9, 14, 9, 6, 4].map(h => `<i style="height:${h}px"></i>`).join('');
 const progHTML = '<div class="se-prog"><span class="se-cur">0:00</span><div class="se-track"><span><b></b></span></div><span class="se-left">-0:00</span></div>';
@@ -156,13 +173,14 @@ function buildUI() {
     <div class="se-mini">
       <div class="se-cover se-sm"></div>
       <div class="se-meta"><div class="se-title"></div><div class="se-artist"></div></div>
+      <button class="se-btn" data-act="lrcsearch" aria-label="在线找歌词">${ICON.search}</button>
       <button class="se-btn" data-act="editlyrics" aria-label="编辑歌词">${ICON.edit}</button>
       <button class="se-btn" data-act="front" aria-label="回到正面">${ICON.lyr}</button>
     </div>
     <div class="se-lines"></div>
     <div class="se-empty" hidden>
-      <span>这首还没有歌词</span>
-      <div><button class="se-primary" data-act="lrcfile">导入 .lrc</button><button data-act="editlyrics">粘贴歌词</button></div>
+      <span class="se-empty-text">这首还没有歌词</span>
+      <div><button class="se-primary" data-act="lrcsearch">在线找</button><button data-act="lrcfile">导入 .lrc</button><button data-act="editlyrics">粘贴</button></div>
     </div>
     ${progHTML}
   </div>
@@ -173,13 +191,30 @@ function buildUI() {
       <button data-mode="order">顺序</button><button data-mode="one">单曲循环</button><button data-mode="shuffle">随机</button>
     </div>
     <div class="se-rows se-pl-rows"></div>
-    <div class="se-actions"><button class="se-primary" data-act="import">导入歌曲</button><button data-act="importlrc">导入歌词</button></div>
+    <div class="se-actions"><button class="se-primary" data-act="importmenu">导入歌曲</button><button data-act="importlrc">导入歌词</button></div>
   </div>
 
   <div class="se-face se-list">
     <div class="se-head"><button class="se-back-btn" data-act="lists" aria-label="返回">‹</button><span class="se-list-name"></span></div>
     <div class="se-rows se-song-rows"></div>
     <div class="se-actions"><button class="se-primary" data-act="importhere">导入歌曲到这里</button></div>
+  </div>
+
+  <div class="se-face se-import">
+    <div class="se-head"><button class="se-back-btn" data-act="importback" aria-label="返回">‹</button><span class="se-import-title">导入歌曲</span></div>
+    <div class="se-opts">
+      <button class="se-opt" data-act="impfiles"><b>选文件</b><small>可以多选。mp3、m4a、flac、wav、ogg 都行；视频只取声音；同时选上 .lrc 会自动配到同名的歌</small></button>
+      <button class="se-opt" data-act="impzip"><b>压缩包</b><small>把整个文件夹打成 zip 一次导入，里面同名的 .lrc 也会配上</small></button>
+      <button class="se-opt" data-act="implinks"><b>粘贴链接</b><small>音频文件的直链，一行一个。能下载的存进浏览器，下载不了的就在线播放</small></button>
+    </div>
+    <div class="se-tip">电脑上也可以直接把文件拖到这张卡片上。</div>
+  </div>
+
+  <div class="se-face se-lrcsearch">
+    <div class="se-head"><button class="se-back-btn" data-act="lrcback" aria-label="返回">‹</button><span>在线找歌词</span></div>
+    <div class="se-searchbar"><input class="se-q" type="search" enterkeyhint="search" placeholder="歌名 歌手"><button class="se-primary" data-act="lrcgo">搜索</button></div>
+    <div class="se-rows se-lrc-rows"></div>
+    <div class="se-tip">歌词来自 LRCLIB 开放歌词库</div>
   </div>
 
   <div class="se-face se-back">
@@ -200,6 +235,8 @@ function buildUI() {
     el.empty = $('.se-empty', root);
     el.plRows = $('.se-pl-rows', root);
     el.songRows = $('.se-song-rows', root);
+    el.lrcRows = $('.se-lrc-rows', root);
+    el.q = $('.se-q', root);
     el.notes = $('#se-notes', root);
     bindUI();
 }
@@ -316,6 +353,22 @@ function bindUI() {
     });
     ['touchstart', 'wheel', 'pointerdown'].forEach(ev => el.lines.addEventListener(ev, () => { userScrolledAt = Date.now(); }, { passive: true }));
 
+    // 拖文件进来就导入（电脑上用）
+    [el.card, el.ball].forEach(node => {
+        node.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+        node.addEventListener('drop', e => {
+            const files = [...(e.dataTransfer?.files || [])];
+            if (!files.length) return;
+            e.preventDefault();
+            if (el.card.classList.contains('se-hidden')) toggleCard(true);
+            const into = el.card.dataset.view === 'list' && openListId !== ALL ? openListId : null;
+            handleIncoming(files, into);
+        });
+    });
+
+    // 歌词搜索框回车
+    el.q.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); runLyricSearch(); } });
+
     // 背面三行字
     $$('[data-key]', el.card).forEach(node => {
         node.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); node.blur(); } });
@@ -346,6 +399,7 @@ function setView(view) {
     if (view === 'list') renderSongList();
     if (view === 'lyrics') renderLyrics(true);
     if (view === 'back') refreshBack();
+    if (view === 'import') $('.se-import-title', el.card).textContent = importTarget ? `导入到「${listName(importTarget)}」` : '导入歌曲';
     placeCard();
     syncNotesLoop();
 }
@@ -371,11 +425,18 @@ async function onAction(act) {
         case 'lists': return setView('lists');
         case 'lyrics': return currentSong() ? setView('lyrics') : setView('lists');
         case 'front': return setView('front');
-        case 'import': return importSongs(null);
-        case 'importhere': return importSongs(openListId === ALL ? null : openListId);
+        case 'importmenu': importTarget = null; return setView('import');
+        case 'importhere': importTarget = openListId === ALL ? null : openListId; return setView('import');
+        case 'importback': return setView(importTarget ? 'list' : 'lists');
+        case 'impfiles': return importFromPicker();
+        case 'impzip': return importFromZipPicker();
+        case 'implinks': return importFromLinks();
         case 'importlrc': return importLyricFiles();
         case 'lrcfile': return importLyricFiles(true);
         case 'editlyrics': return editLyrics();
+        case 'lrcsearch': return openLyricSearch(settings.songId, 'lyrics');
+        case 'lrcback': return setView(lrcBackView);
+        case 'lrcgo': return runLyricSearch();
     }
 }
 
@@ -386,10 +447,10 @@ async function loadSong(id, autoplay) {
     const s = songById(id);
     if (!s) return;
     const blob = await db.getAudio(id);
-    if (!blob) { toast('error', `《${s.title}》的音频找不到了，可能被浏览器清理了`); return; }
+    if (!blob && !s.url) { toast('error', `《${s.title}》的音频找不到了，可能被浏览器清理了`); return; }
     if (audioUrl) URL.revokeObjectURL(audioUrl);
-    audioUrl = URL.createObjectURL(blob);
-    audio.src = audioUrl;
+    audioUrl = blob ? URL.createObjectURL(blob) : null;
+    audio.src = audioUrl || s.url;
     settings.songId = id;
     save();
     await loadLyrics(id);
@@ -566,19 +627,80 @@ function renderSongList() {
         el.songRows.innerHTML = `<div class="se-blank">${openListId === ALL ? '还没有歌，点下面导入' : '这个歌单是空的。<br>放歌的时候点星星，在歌单旁边打勾就能加进来'}</div>`;
         return;
     }
+    const delText = openListId === ALL ? '删除' : '移出歌单';
     el.songRows.innerHTML = ids.map(id => {
         const s = songById(id);
         const now = id === settings.songId ? ' se-playing-row' : '';
-        return `<div class="se-row${now}" data-song="${esc(id)}">
-  <div class="se-row-main"><div>${esc(s.title)}</div><div class="se-row-sub">${esc(s.artist || '未知歌手')}</div></div>
-  <button class="se-more" data-more="${esc(id)}" aria-label="${openListId === ALL ? '删除这首歌' : '从歌单移出'}">···</button>
+        const tags = [s.artist || '未知歌手'];
+        if (s.url && !s.local) tags.push('在线');
+        if (s.instrumental) tags.push('纯音乐');
+        return `<div class="se-song" data-song="${esc(id)}">
+  <div class="se-row${now}">
+    <div class="se-row-main"><div>${esc(s.title)}</div><div class="se-row-sub">${esc(tags.join(' · '))}</div></div>
+    <button class="se-more" data-more aria-label="更多操作">···</button>
+  </div>
+  <div class="se-row-acts" hidden>
+    <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button><button data-op="del" class="se-danger">${delText}</button>
+  </div>
 </div>`;
     }).join('');
-    $$('[data-song] .se-row-main', el.songRows).forEach(n => n.addEventListener('click', () => {
-        playFromList(openListId, n.parentElement.dataset.song);
-        renderSongList();
-    }));
-    $$('[data-more]', el.songRows).forEach(n => n.addEventListener('click', e => { e.stopPropagation(); removeSong(n.dataset.more); }));
+    $$('.se-song', el.songRows).forEach(box => {
+        const id = box.dataset.song;
+        $('.se-row-main', box).addEventListener('click', () => { playFromList(openListId, id); renderSongList(); });
+        $('[data-more]', box).addEventListener('click', e => {
+            e.stopPropagation();
+            const acts = $('.se-row-acts', box);
+            const open = acts.hidden;
+            $$('.se-row-acts', el.songRows).forEach(x => { x.hidden = true; });
+            acts.hidden = !open;
+        });
+        $$('[data-op]', box).forEach(btn => btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const op = btn.dataset.op;
+            if (op === 'edit') editSongInfo(id);
+            else if (op === 'cover') changeCover(id);
+            else if (op === 'lyrics') openLyricSearch(id, 'list');
+            else if (op === 'del') removeSong(id);
+        }));
+    });
+}
+
+async function editSongInfo(id) {
+    const s = songById(id);
+    if (!s) return;
+    const { Popup, POPUP_TYPE } = ctx();
+    const box = document.createElement('div');
+    box.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;text-align:left">
+  <label>歌名<input class="text_pole" data-f="title"></label>
+  <label>歌手<input class="text_pole" data-f="artist"></label></div>`;
+    $('[data-f="title"]', box).value = s.title;
+    $('[data-f="artist"]', box).value = s.artist || '';
+    const ok = await new Popup(box, POPUP_TYPE.CONFIRM, '', { okButton: '保存', cancelButton: '取消' }).show();
+    if (!ok) return;
+    const title = $('[data-f="title"]', box).value.trim();
+    const artist = $('[data-f="artist"]', box).value.trim();
+    if (!title) return;
+    s.title = title;
+    s.artist = artist;
+    await db.saveIndex(library.index);
+    render();
+    renderSongList();
+    if ((!s.hasLyrics && settings.autoLyrics) || (!s.hasCover && settings.autoCover)) enrich([id], true);
+}
+
+async function changeCover(id) {
+    const s = songById(id);
+    if (!s) return;
+    const [f] = await pickFiles('image/*', false);
+    if (!f) return;
+    const blob = await shrinkImage(f, 600, 'blob');
+    await db.putCover(id, blob);
+    s.hasCover = true;
+    if (coverUrls.has(id)) { URL.revokeObjectURL(coverUrls.get(id)); coverUrls.delete(id); }
+    await db.saveIndex(library.index);
+    render();
+    if (id === settings.songId) updateMediaSession();
+    toast('success', '封面换好了');
 }
 
 async function removeSong(id) {
@@ -610,48 +732,335 @@ async function removeSong(id) {
 // ======================================================
 // 导入歌曲
 // ======================================================
-async function importSongs(intoListId) {
-    const files = await pickFiles('audio/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus');
-    if (!files.length) return;
-    await db.requestPersist();
-    let ok = 0;
-    const tip = files.length > 1 && window.toastr ? toastr.info(`正在导入 0/${files.length}`, '', { timeOut: 0, extendedTimeOut: 0 }) : null;
-    for (const [i, file] of files.entries()) {
-        try {
-            const guess = guessFromFilename(file.name);
-            const tag = await readID3(file);
-            const id = uid();
-            const blob = new Blob([file], { type: file.type || 'audio/mpeg' });
-            await db.putAudio(id, blob);
-            if (tag.cover) await db.putCover(id, tag.cover);
-            if (tag.lyrics) await db.putLyrics(id, tag.lyrics);
-            library.index.push({
-                id,
-                title: tag.title || guess.title,
-                artist: tag.artist || guess.artist,
-                file: guess.base,
-                hasCover: !!tag.cover,
-                hasLyrics: !!tag.lyrics,
-                duration: 0,
-                added: Date.now(),
-            });
-            if (intoListId) library.playlists.find(p => p.id === intoListId)?.songIds.push(id);
-            ok++;
-        } catch (e) {
-            console.error(TAG, e);
-            const full = e?.name === 'QuotaExceededError';
-            toast('error', full ? '浏览器存储空间满了，后面的歌没存进去' : `《${file.name}》导入失败`);
-            if (full) break;
-        }
-        if (tip) tip.find('.toast-message').text(`正在导入 ${i + 1}/${files.length}`);
+const extOf = (name) => (name.match(/\.([^.]+)$/)?.[1] || '').toLowerCase();
+const isAudioFile = (f) => /^(audio|video)\//.test(f.type) || AUDIO_EXT.test(f.name);
+
+function progressToast(total, label) {
+    if (total < 2 || !window.toastr) return { set() {}, done() {} };
+    const tip = toastr.info(`${label} 0/${total}`, '', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+    return {
+        set: (n) => tip.find('.toast-message').text(`${label} ${n}/${total}`),
+        done: () => toastr.clear(tip),
+    };
+}
+
+/** 存一首歌。成功返回 id，失败抛错。 */
+async function addSongFile(file, extra = {}) {
+    const guess = guessFromFilename(file.name);
+    const tag = await readTags(file);
+    const id = uid();
+    const type = file.type || MIME_BY_EXT[extOf(file.name)] || 'audio/mpeg';
+    await db.putAudio(id, new Blob([file], { type }));
+    if (tag.cover) await db.putCover(id, tag.cover);
+    if (tag.lyrics) await db.putLyrics(id, tag.lyrics);
+    library.index.push({
+        id,
+        title: (tag.title || guess.title || '未命名').trim(),
+        artist: (tag.artist || guess.artist || '').trim(),
+        file: guess.base,
+        hasCover: !!tag.cover,
+        hasLyrics: !!tag.lyrics,
+        duration: 0,
+        added: Date.now(),
+        ...extra,
+    });
+    return id;
+}
+
+/** 把一批 .lrc 按名字配给歌。返回配上的数量。 */
+async function matchLyricTexts(items, preferIds = null) {
+    let n = 0;
+    for (const { name, text } of items) {
+        const key = normalizeName(name);
+        const pool = preferIds ? library.index.filter(x => preferIds.includes(x.id)) : library.index;
+        const s = [...pool, ...library.index].find(x =>
+            normalizeName(x.file) === key || normalizeName(x.title) === key ||
+            normalizeName(`${x.artist}-${x.title}`) === key || normalizeName(`${x.title}-${x.artist}`) === key);
+        if (s) { await setSongLyrics(s.id, text); n++; }
     }
-    if (tip) toastr.clear(tip);
+    return n;
+}
+
+/** 文件统一入口：歌、歌词、压缩包、备份都从这里分流。 */
+async function handleIncoming(files, intoListId = importTarget) {
+    const songs = files.filter(isAudioFile);
+    const lrcs = files.filter(f => /\.(lrc|txt)$/i.test(f.name));
+    const zips = files.filter(f => /\.zip$/i.test(f.name));
+    const backups = files.filter(f => /\.sebk$/i.test(f.name));
+    if (!songs.length && !lrcs.length && !zips.length && !backups.length) {
+        toast('warning', '没认出能导入的文件');
+        return;
+    }
+    await db.requestPersist();
+    const newIds = [];
+    let failed = 0;
+    const prog = progressToast(songs.length, '正在导入');
+    for (const [i, f] of songs.entries()) {
+        try { newIds.push(await addSongFile(f)); } catch (e) {
+            console.error(TAG, e);
+            failed++;
+            if (e?.name === 'QuotaExceededError') { toast('error', '浏览器存储空间满了，后面的歌没存进去'); break; }
+        }
+        prog.set(i + 1);
+    }
+    prog.done();
+    for (const z of zips) {
+        const r = await importZip(z);
+        newIds.push(...r.ids);
+        failed += r.failed;
+    }
+    for (const bk of backups) {
+        try {
+            const r = await db.importBackup(bk);
+            library = await db.loadLibrary();
+            toast('success', `从备份恢复了 ${r.songs} 首歌`);
+        } catch (e) { toast('error', e.message || '备份导入失败'); }
+    }
+    await finishImport(newIds, intoListId, failed);
+    if (lrcs.length) {
+        const items = await Promise.all(lrcs.map(async f => ({ name: f.name, text: await f.text() })));
+        const n = await matchLyricTexts(items, newIds);
+        toast(n ? 'success' : 'warning', `歌词配上了 ${n} 个` + (n < items.length ? `，${items.length - n} 个没找到同名的歌` : ''));
+    }
+}
+
+async function finishImport(newIds, intoListId, failed = 0) {
+    if (intoListId) {
+        const pl = library.playlists.find(p => p.id === intoListId);
+        if (pl) newIds.forEach(id => { if (!pl.songIds.includes(id)) pl.songIds.push(id); });
+    }
     await db.saveIndex(library.index);
     await db.savePlaylists(library.playlists);
-    toast('success', `导入了 ${ok} 首`);
+    if (newIds.length || failed) toast(newIds.length ? 'success' : 'error', `导入了 ${newIds.length} 首` + (failed ? `，${failed} 首失败` : ''));
     if (!settings.songId && library.index.length) await loadSong(library.index[0].id, false);
+    if (el.card.dataset.view === 'import') setView(intoListId ? 'list' : 'lists');
     render();
+    if (newIds.length) enrich(newIds);
+}
+
+async function importFromPicker() {
+    const files = await pickFiles(FILE_ACCEPT);
+    if (files.length) await handleIncoming(files, importTarget);
+}
+
+async function importFromZipPicker() {
+    const files = await pickFiles('.zip,application/zip', true);
+    if (files.length) await handleIncoming(files, importTarget);
+}
+
+async function importZip(zipFile) {
+    const ids = [];
+    let failed = 0;
+    let entries;
+    try { entries = await listZip(zipFile); } catch (e) { toast('error', e.message); return { ids, failed: 0 }; }
+    const songs = entries.filter(x => AUDIO_EXT.test(x.name));
+    const lrcs = entries.filter(x => /\.lrc$/i.test(x.name));
+    if (!songs.length) { toast('warning', `「${zipFile.name}」里没找到歌`); return { ids, failed: 0 }; }
+    const prog = progressToast(songs.length, '正在解压导入');
+    for (const [i, entry] of songs.entries()) {
+        try {
+            const f = await extractZip(zipFile, entry, MIME_BY_EXT[extOf(entry.name)] || '');
+            ids.push(await addSongFile(f));
+        } catch (e) {
+            console.error(TAG, e);
+            failed++;
+            if (e?.name === 'QuotaExceededError') { toast('error', '浏览器存储空间满了，后面的歌没存进去'); break; }
+        }
+        prog.set(i + 1);
+    }
+    prog.done();
+    if (lrcs.length) {
+        await db.saveIndex(library.index);
+        const items = [];
+        for (const entry of lrcs) {
+            try { items.push({ name: entry.name.split('/').pop(), text: await (await extractZip(zipFile, entry, 'text/plain')).text() }); } catch { /* 跳过 */ }
+        }
+        await matchLyricTexts(items, ids);
+    }
+    return { ids, failed };
+}
+
+async function importFromLinks() {
+    const { Popup } = ctx();
+    const text = await Popup.show.input('粘贴链接', '音频文件的直接链接，一行一个。网易云、QQ 音乐的分享链接是网页，用不了。', '', { rows: 6 });
+    if (!text) return;
+    const urls = String(text).split(/\s+/).filter(u => /^https?:\/\//i.test(u));
+    if (!urls.length) { toast('warning', '没找到链接'); return; }
+    await db.requestPersist();
+    const newIds = [];
+    let failed = 0, online = 0;
+    const prog = progressToast(urls.length, '正在处理链接');
+    for (const [i, url] of urls.entries()) {
+        const name = decodeURIComponent((new URL(url).pathname.split('/').pop() || 'link').replace(/\+/g, ' ')) || '链接歌曲';
+        let saved = false;
+        // 先试试能不能整个下载下来
+        try {
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), 90000);
+            const r = await fetch(url, { signal: ctl.signal });
+            clearTimeout(timer);
+            const type = r.headers.get('content-type') || '';
+            if (r.ok && !/text\/html|json/i.test(type)) {
+                const blob = await r.blob();
+                newIds.push(await addSongFile(new File([blob], AUDIO_EXT.test(name) ? name : name + '.mp3', { type: blob.type || type }), { url, local: true }));
+                saved = true;
+            }
+        } catch { /* 多半是对方不允许网页下载，下面试在线播放 */ }
+        if (!saved) {
+            if (await canStream(url)) {
+                const guess = guessFromFilename(name);
+                const id = uid();
+                library.index.push({ id, title: guess.title || '链接歌曲', artist: guess.artist || '', file: guess.base, hasCover: false, hasLyrics: false, duration: 0, added: Date.now(), url, local: false });
+                newIds.push(id);
+                online++;
+            } else failed++;
+        }
+        prog.set(i + 1);
+    }
+    prog.done();
+    if (online) toast('info', `${online} 首只能在线播放，没联网的时候放不了。可以在歌单里点 ··· 改歌名`);
+    if (failed) toast('warning', `${failed} 个链接放不了，需要是能直接打开的音频文件链接`);
+    await finishImport(newIds, importTarget, 0);
+}
+
+function canStream(url) {
+    return new Promise(resolve => {
+        const a = new Audio();
+        a.preload = 'metadata';
+        const end = (ok) => { clearTimeout(timer); a.removeAttribute('src'); a.load(); resolve(ok); };
+        const timer = setTimeout(() => end(false), 12000);
+        a.addEventListener('loadedmetadata', () => end(true), { once: true });
+        a.addEventListener('error', () => end(false), { once: true });
+        a.src = url;
+    });
+}
+
+// ======================================================
+// 联网补全：时长、封面、歌词
+// ======================================================
+async function probeDuration(id) {
+    const s = songById(id);
+    const blob = await db.getAudio(id);
+    const src = blob ? URL.createObjectURL(blob) : s?.url;
+    if (!src) return 0;
+    return new Promise(resolve => {
+        const a = new Audio();
+        a.preload = 'metadata';
+        const end = (d) => { clearTimeout(timer); if (blob) URL.revokeObjectURL(src); a.removeAttribute('src'); a.load(); resolve(d); };
+        const timer = setTimeout(() => end(0), 8000);
+        a.addEventListener('loadedmetadata', () => end(isFinite(a.duration) ? a.duration : 0), { once: true });
+        a.addEventListener('error', () => end(0), { once: true });
+        a.src = src;
+    });
+}
+
+async function enrich(ids, quiet = false) {
+    if (enriching) { setTimeout(() => enrich(ids, quiet), 1500); return; }
+    if (!settings.autoLyrics && !settings.autoCover) return;
+    enriching = true;
+    let lyr = 0, cov = 0, inst = 0, coverBlocked = false, lyricBlocked = false;
+    try {
+        for (const id of ids) {
+            const s = songById(id);
+            if (!s) continue;
+            if (!s.duration) s.duration = await probeDuration(id);
+            if (settings.autoCover && !s.hasCover && !coverBlocked) {
+                try {
+                    const blob = await findCover(s);
+                    if (blob) { await db.putCover(id, blob); s.hasCover = true; cov++; }
+                } catch (e) { if (e.limited) coverBlocked = true; else console.warn(TAG, '找封面失败', s.title, e); }
+            }
+            if (settings.autoLyrics && !s.hasLyrics && !s.instrumental && !lyricBlocked) {
+                try {
+                    const r = await findLyrics(s);
+                    if (r?.instrumental) { s.instrumental = true; inst++; }
+                    else if (r?.text) { await db.putLyrics(id, r.text); s.hasLyrics = true; lyr++; }
+                } catch (e) { if (e.limited) lyricBlocked = true; console.warn(TAG, '找歌词失败', s.title, e); }
+            }
+            await db.saveIndex(library.index);
+            if (id === settings.songId) {
+                if (coverUrls.has(id)) { URL.revokeObjectURL(coverUrls.get(id)); coverUrls.delete(id); }
+                await loadLyrics(id);
+                render();
+                updateMediaSession();
+            }
+            if (coverBlocked && lyricBlocked) break;
+            await new Promise(r => setTimeout(r, 1200)); // 每首之间歇一下，别把人家服务器问烦了
+        }
+    } finally {
+        enriching = false;
+    }
     if (el.card.dataset.view === 'list') renderSongList();
+    if (lyr || cov || inst) {
+        const parts = [];
+        if (lyr) parts.push(`${lyr} 首歌词`);
+        if (cov) parts.push(`${cov} 张封面`);
+        if (inst) parts.push(`${inst} 首认出是纯音乐`);
+        toast('success', '自动配上了 ' + parts.join('、'));
+    } else if (!quiet && ids.length && !coverBlocked && !lyricBlocked) {
+        toast('info', '网上没找到能对上的歌词或封面，可以在歌词页点放大镜手动搜');
+    }
+    if (coverBlocked || lyricBlocked) {
+        toast('warning', `${lyricBlocked ? '歌词库' : '封面搜索'}让我们慢一点，剩下的先停了。过几分钟去扩展设置里点「补全缺的歌词和封面」就行`);
+    }
+}
+
+// ---------- 在线找歌词 ----------
+let lrcBackView = 'lyrics';
+let lrcResults = [];
+
+function openLyricSearch(id, backTo) {
+    const s = songById(id);
+    if (!s) { toast('info', '先选一首歌'); return; }
+    lrcTargetId = id;
+    lrcBackView = backTo;
+    el.q.value = `${s.title} ${s.artist || ''}`.trim();
+    el.lrcRows.innerHTML = '';
+    setView('lrcsearch');
+    runLyricSearch();
+}
+
+async function runLyricSearch() {
+    const q = el.q.value.trim();
+    if (!q) return;
+    el.lrcRows.innerHTML = '<div class="se-blank">正在搜…</div>';
+    try {
+        lrcResults = await searchLyrics(q);
+    } catch {
+        el.lrcRows.innerHTML = '<div class="se-blank">连不上歌词库，检查一下网络再试</div>';
+        return;
+    }
+    if (!lrcResults.length) {
+        el.lrcRows.innerHTML = '<div class="se-blank">没搜到。可以只搜歌名，或者换成歌手的另一种写法试试</div>';
+        return;
+    }
+    const want = songById(lrcTargetId)?.duration || 0;
+    el.lrcRows.innerHTML = lrcResults.slice(0, 30).map((r, i) => {
+        const kind = r.instrumental ? '纯音乐' : r.synced ? '带时间轴' : r.plain ? '纯文本' : '无歌词';
+        const fit = want && r.duration && Math.abs(r.duration - want) <= 3 ? ' · 时长吻合' : '';
+        return `<div class="se-row" data-pick="${i}"><div class="se-row-main"><div>${esc(r.title)}</div><div class="se-row-sub">${esc(r.artist)} · ${fmt(r.duration)} · ${kind}${fit}</div></div></div>`;
+    }).join('');
+    $$('[data-pick]', el.lrcRows).forEach(n => n.addEventListener('click', () => pickLyricResult(lrcResults[Number(n.dataset.pick)])));
+}
+
+async function pickLyricResult(r) {
+    const s = songById(lrcTargetId);
+    if (!s || !r) return;
+    if (r.instrumental) {
+        s.instrumental = true;
+        await setSongLyrics(s.id, '');
+        s.instrumental = true;
+        await db.saveIndex(library.index);
+        toast('success', '标成纯音乐了');
+    } else if (r.synced || r.plain) {
+        await setSongLyrics(s.id, r.synced || r.plain);
+        toast('success', '歌词换好了');
+    } else {
+        toast('warning', '这一条没有歌词内容，换一条试试');
+        return;
+    }
+    if (lrcBackView === 'list') setView('list');
+    else setView('lyrics');
 }
 
 // ======================================================
@@ -669,6 +1078,7 @@ function renderLyrics(resetScroll) {
     const has = lyricData && lyricData.lines.length;
     el.empty.hidden = !!has || !s;
     el.lines.hidden = !has;
+    $('.se-empty-text', el.card).textContent = s?.instrumental ? '这首是纯音乐，没有歌词' : '这首还没有歌词';
     if (!has) { el.lines.innerHTML = ''; return; }
     el.lines.classList.toggle('se-plain', !lyricData.timed);
     el.lines.innerHTML = lyricData.lines.map(l => `<div class="se-line" data-t="${l.t}">${esc(l.text) || '&nbsp;'}</div>`).join('');
@@ -698,7 +1108,7 @@ function renderLyricsTick(instant) {
 async function setSongLyrics(id, text) {
     const s = songById(id);
     if (!s) return;
-    if (text && text.trim()) { await db.putLyrics(id, text); s.hasLyrics = true; }
+    if (text && text.trim()) { await db.putLyrics(id, text); s.hasLyrics = true; s.instrumental = false; }
     else { await db.putLyrics(id, ''); s.hasLyrics = false; }
     await db.saveIndex(library.index);
     if (id === settings.songId) { await loadLyrics(id); renderLyrics(true); }
@@ -889,6 +1299,11 @@ function buildSettingsPanel() {
       </div>
       <label for="se_material">质感</label>
       <select id="se_material" class="text_pole"><option value="frost">磨砂</option><option value="liquid">液态玻璃</option></select>
+      <label class="checkbox_label"><input type="checkbox" id="se_auto_lyrics"><span>导入时自动找歌词（LRCLIB）</span></label>
+      <label class="checkbox_label"><input type="checkbox" id="se_auto_cover"><span>导入时自动补封面</span></label>
+      <small>这两项需要联网，找到的东西会存进浏览器，以后离线也能看。</small>
+      <div class="menu_button" id="se_fill">补全缺的歌词和封面</div>
+      <hr>
       <label for="se_tint">玻璃明暗</label>
       <select id="se_tint" class="text_pole"><option value="auto">跟随酒馆主题</option><option value="light">偏亮</option><option value="dark">偏暗</option></select>
       <hr>
@@ -913,6 +1328,18 @@ function buildSettingsPanel() {
     const mat = $('#se_material');
     mat.value = settings.material;
     mat.addEventListener('change', () => { settings.material = mat.value; save(); applyLook(); });
+    const al = $('#se_auto_lyrics');
+    al.checked = settings.autoLyrics;
+    al.addEventListener('change', () => { settings.autoLyrics = al.checked; save(); });
+    const ac = $('#se_auto_cover');
+    ac.checked = settings.autoCover;
+    ac.addEventListener('change', () => { settings.autoCover = ac.checked; save(); });
+    $('#se_fill').addEventListener('click', () => {
+        const ids = library.index.filter(s => (!s.hasLyrics && !s.instrumental) || !s.hasCover).map(s => s.id);
+        if (!ids.length) { toast('info', '每首歌都齐了'); return; }
+        toast('info', `开始给 ${ids.length} 首歌补全，在后台慢慢来`);
+        enrich(ids);
+    });
     const tint = $('#se_tint');
     tint.value = settings.tint;
     tint.addEventListener('change', () => { settings.tint = tint.value; save(); applyLook(); });
@@ -967,7 +1394,7 @@ function setBallVisible(v) {
     if (box) box.checked = v;
 }
 
-function shrinkImage(file, size) {
+function shrinkImage(file, size, as = 'dataurl') {
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
@@ -976,7 +1403,8 @@ function shrinkImage(file, size) {
             const s = Math.min(img.width, img.height);
             c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
             URL.revokeObjectURL(img.src);
-            resolve(c.toDataURL('image/png'));
+            if (as === 'blob') c.toBlob(b => resolve(b), 'image/jpeg', 0.88);
+            else resolve(c.toDataURL('image/png'));
         };
         img.onerror = reject;
         img.src = URL.createObjectURL(file);
