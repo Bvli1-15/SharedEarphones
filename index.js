@@ -1,6 +1,7 @@
 // 共享耳机 · 播放器本体
 // 悬浮球、卡片正面、歌词、歌单、背面耳机线，歌存在浏览器里。
 // 导入：文件（多种格式、视频取声音）、zip 压缩包、链接、拖拽、在线找开放授权音乐、流行歌（GD音乐台，只在线播放）；联网自动配歌词（LRCLIB）和封面。
+// 让 char 听见：把正在放的歌（氛围、歌词）悄悄塞进提示词；氛围标签；char 根据剧情换歌。
 
 import { BACK_SVG, BACK_VIEWBOX } from './earphones.js';
 import { readTags, guessFromFilename, normalizeName, parseLyrics } from './parsers.js';
@@ -8,6 +9,7 @@ import { listZip, extractZip } from './zip.js';
 import { findLyrics, findCover, searchLyrics } from './online.js';
 import { searchFree, fetchThumb, MOODS } from './free.js';
 import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME } from './gd.js';
+import { analyzeAudio, tagsByRules, describeAnalysis, MOOD_WORDS } from './analyze.js';
 import * as db from './db.js';
 
 const MODULE = 'shared_earphones';
@@ -26,7 +28,13 @@ const DEFAULTS = Object.freeze({
     texts: {},              // 每个角色背面的三行字
     autoLyrics: true,       // 导入时自动去 LRCLIB 找歌词
     autoCover: true,        // 导入时自动补封面
+    listen: true,           // 让 char 听见（只在播放时）
+    listenMode: 'lines',    // vibe 只给氛围 / lines 氛围+正在唱的几句 / full 氛围+整首歌词
+    tagMode: 'model',       // rules 规则换算（零 token）/ model 模型判断（每首一次）
+    autoSwitch: true,       // char 根据剧情换歌
+    switchCooldown: 3,      // 换过之后隔几轮才能再换
 });
+const INJECT_KEY = 'shared_earphones';
 
 const AUDIO_EXT = /\.(mp3|m4a|aac|flac|wav|wave|ogg|oga|opus|webm|mp4|m4v|mov|aif|aiff|caf|alac|wma)$/i;
 const MIME_BY_EXT = {
@@ -37,6 +45,13 @@ const MIME_BY_EXT = {
 const FILE_ACCEPT = 'audio/*,video/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus,.webm,.mp4,.mov,.aiff,.lrc,.zip';
 
 const ctx = () => SillyTavern.getContext();
+/** 取酒馆的函数：getContext() 里有就用；老版本没放进去的，从 script.js 直接导入（1.12.0 起就导出了）。 */
+async function stFn(name) {
+    const f = ctx()[name];
+    if (typeof f === 'function') return f;
+    try { const m = await import(new URL('../../../../script.js', import.meta.url).href); if (typeof m[name] === 'function') return m[name]; } catch (e) { console.warn(TAG, `拿不到 ${name}`, e); }
+    return null;
+}
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -53,6 +68,8 @@ let openListId = ALL;       // 歌单详情页正在看的歌单
 let importTarget = null;    // 导入的歌要不要顺便放进某个歌单
 let lrcTargetId = null;     // 在线找歌词是给哪首歌找
 let enriching = false;
+let tagging = false;
+let turnsSinceSwitch = 99;  // 离上次 char 换歌过了几轮
 
 const el = {};              // 常用元素
 
@@ -704,6 +721,7 @@ function renderSongList() {
         const tags = [s.artist || '未知歌手'];
         if ((s.url && !s.local) || s.gd) tags.push('在线');
         if (s.instrumental) tags.push('纯音乐');
+        if (s.mood) tags.push(s.mood);
         if (s.license) tags.push(s.license);
         return `<div class="se-song" data-song="${esc(id)}">
   <div class="se-row${now}">
@@ -743,9 +761,13 @@ async function editSongInfo(id) {
     const box = document.createElement('div');
     box.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;text-align:left">
   <label>歌名<input class="text_pole" data-f="title"></label>
-  <label>歌手<input class="text_pole" data-f="artist"></label></div>`;
+  <label>歌手<input class="text_pole" data-f="artist"></label>
+  <label>氛围标签（用逗号隔开）<input class="text_pole" data-f="tags"></label>
+  <label>情绪（char 换歌时按这个挑）<select class="text_pole" data-f="mood"><option value="">不设</option>${MOOD_WORDS.map(w => `<option>${w}</option>`).join('')}</select></label></div>`;
     $('[data-f="title"]', box).value = s.title;
     $('[data-f="artist"]', box).value = s.artist || '';
+    $('[data-f="tags"]', box).value = (s.tags || []).join('，');
+    $('[data-f="mood"]', box).value = s.mood || '';
     const ok = await new Popup(box, POPUP_TYPE.CONFIRM, '', { okButton: '保存', cancelButton: '取消' }).show();
     if (!ok) return;
     const title = $('[data-f="title"]', box).value.trim();
@@ -753,6 +775,9 @@ async function editSongInfo(id) {
     if (!title) return;
     s.title = title;
     s.artist = artist;
+    const tags = $('[data-f="tags"]', box).value.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean).slice(0, 6);
+    const mood = $('[data-f="mood"]', box).value;
+    if (tags.join() !== (s.tags || []).join() || mood !== (s.mood || '')) { s.tags = tags; s.mood = mood; s.tagBy = 'user'; }
     await db.saveIndex(library.index);
     render();
     renderSongList();
@@ -906,7 +931,7 @@ async function finishImport(newIds, intoListId, failed = 0) {
     if (!settings.songId && library.index.length) await loadSong(library.index[0].id, false);
     if (el.card.dataset.view === 'import') setView(intoListId ? 'list' : 'lists');
     render();
-    if (newIds.length) enrich(newIds);
+    if (newIds.length) { enrich(newIds); tagSongs(newIds); }
 }
 
 async function importFromPicker() {
@@ -1111,6 +1136,7 @@ async function saveFreeTrack(i, btn) {
     if (!settings.songId) await loadSong(id, false);
     render();
     toast('success', `《${m.title}》收进歌库了`);
+    tagSongs([id]);
 }
 
 // ======================================================
@@ -1206,6 +1232,7 @@ async function saveGDTrack(i, btn) {
     render();
     toast('success', `《${m.title}》加进歌库了`);
     enrich([id], true); // 歌词照旧去 LRCLIB 配
+    tagSongs([id]);
 }
 
 // ======================================================
@@ -1276,6 +1303,162 @@ async function enrich(ids, quiet = false) {
     if (coverBlocked || lyricBlocked) {
         toast('warning', `${lyricBlocked ? '歌词库' : '封面搜索'}让我们慢一点，剩下的先停了。过几分钟去扩展设置里点「补全缺的歌词和封面」就行`);
     }
+}
+
+// ======================================================
+// 氛围标签：本地分析（零 token）+ 规则换算或模型判断
+// ======================================================
+async function modelTags(s) {
+    const generateRaw = await stFn('generateRaw');
+    if (!generateRaw) throw new Error('这个版本的酒馆拿不到 generateRaw');
+    let excerpt = '';
+    if (s.hasLyrics) {
+        const raw = (await db.getLyrics(s.id)) || '';
+        excerpt = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 8).join('\n');
+    }
+    const prompt = [
+        '给这首歌标注氛围，之后会在角色扮演里当背景音乐参考。',
+        `歌名：${s.title}`,
+        s.artist ? `歌手：${s.artist}` : '',
+        s.instrumental ? '这是一首纯音乐。' : '',
+        s.analysis ? `声音特征（本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
+        excerpt ? `歌词开头几行：\n${excerpt}` : '',
+        `只输出一行 JSON，不要别的内容：{"tags":["3到5个中文氛围词"],"mood":"从 ${MOOD_WORDS.join('/')} 里选一个"}`,
+    ].filter(Boolean).join('\n');
+    const systemPrompt = '你是音乐氛围标注助手，只输出 JSON。';
+    // 酒馆 1.13.2 起 generateRaw 改成对象传参（形参个数为 0）；之前是 (prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength)
+    const out = generateRaw.length === 0
+        ? await generateRaw({ prompt, systemPrompt, responseLength: 120 })
+        : await generateRaw(prompt, null, false, false, systemPrompt, 120);
+    const m = String(out || '').match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('模型没有按格式回答');
+    const j = JSON.parse(m[0]);
+    const tags = (Array.isArray(j.tags) ? j.tags : []).map(x => String(x).trim()).filter(Boolean).slice(0, 5);
+    const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
+    if (!tags.length && !mood) throw new Error('模型没给出标签');
+    return { tags, mood };
+}
+
+/** 给歌打标签。force 为真时连已经有标签的也重做（你手动改过的不动）。 */
+async function tagSongs(ids, force = false) {
+    if (tagging) { setTimeout(() => tagSongs(ids, force), 2000); return; }
+    tagging = true;
+    let done = 0, modelFailed = false;
+    const useModel = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
+    try {
+        for (const id of ids) {
+            const s = songById(id);
+            if (!s || s.tagBy === 'user' || (s.mood && !force)) continue;
+            // 1. 本地分析，零 token
+            if (!s.analysis) {
+                const blob = await db.getAudio(id);
+                if (blob) {
+                    try { s.analysis = await analyzeAudio(blob); } catch (e) { console.warn(TAG, '音频分析失败', s.title, e); }
+                }
+            }
+            // 2. 规则换算 或 模型判断
+            let r = null;
+            if (useModel && !modelFailed) {
+                try { r = await modelTags(s); s.tagBy = 'model'; } catch (e) {
+                    console.warn(TAG, '模型打标签失败，改用规则', e);
+                    modelFailed = true;
+                }
+            }
+            if (!r && s.analysis) { r = tagsByRules(s.analysis); s.tagBy = 'rules'; }
+            if (r) { s.tags = r.tags; s.mood = r.mood; done++; }
+            await db.saveIndex(library.index);
+        }
+    } finally {
+        tagging = false;
+    }
+    if (el.card.dataset.view === 'list') renderSongList();
+    if (modelFailed) toast('warning', '模型没能打标签（可能还没连上 API），这次先用规则换算了');
+    return done;
+}
+
+// ======================================================
+// 让 char 听见：每次生成前把正在放的歌塞进提示词
+// ======================================================
+function lyricWindow() {
+    if (!lyricData?.lines.length) return '';
+    const L = lyricData.lines;
+    let i;
+    if (lyricData.timed) {
+        i = 0;
+        for (let k = 0; k < L.length; k++) { if (L[k].t <= audio.currentTime + 0.15) i = k; else break; }
+    } else {
+        const d = audio.duration || currentSong()?.duration || 0;
+        i = d ? Math.floor((audio.currentTime / d) * L.length) : 0;
+    }
+    return L.slice(Math.max(0, i), i + 3).map(l => l.text).filter(Boolean).join('\n');
+}
+
+function libraryMoods() {
+    return [...new Set(library.index.map(s => s.mood).filter(Boolean))];
+}
+
+function buildInjection() {
+    if (!settings.listen || audio.paused) return '';
+    const s = currentSong();
+    if (!s) return '';
+    const c = ctx();
+    const out = ['[背景音乐 · 只作为氛围参考]'];
+    out.push(`${c.name1 || '用户'}此刻耳机里放着《${s.title}》${s.artist ? '（' + s.artist + '）' : ''}。`);
+    const vibe = [s.mood, ...(s.tags || [])].filter(Boolean);
+    if (s.instrumental) vibe.push('纯音乐');
+    if (s.analysis?.bpm) vibe.push(`约 ${Math.round(s.analysis.bpm)} BPM`);
+    if (vibe.length) out.push(`氛围：${[...new Set(vibe)].join('、')}`);
+    if (settings.listenMode === 'lines') {
+        const seg = lyricWindow();
+        if (seg) out.push(`此刻唱到：\n${seg}`);
+    } else if (settings.listenMode === 'full' && lyricData?.lines.length) {
+        const all = lyricData.lines.map(l => l.text).filter(Boolean).join('\n');
+        out.push(`歌词：\n${all.slice(0, 2500)}`);
+    }
+    out.push('写作要求：结合当前情节，把这首歌的情绪和意象自然地化进叙述里，可以体现在语气、节奏、环境细节或人物心境上；场景不搭的时候只轻轻影响语气，不要硬套。用你自己的话写，不要引用或改写歌词原句，也不要提到音乐、歌曲、歌名、耳机或「在听歌」这件事。');
+    const moods = libraryMoods();
+    if (settings.autoSwitch && turnsSinceSwitch >= settings.switchCooldown && moods.some(m => m !== s.mood)) {
+        out.push(`如果这一段正文的情绪和这首歌明显不搭，可以在回复的最后单独写一个 <bgm>情绪词</bgm> 来换背景音乐，情绪词只能从这些里选：${moods.join('、')}。不需要换就别写。正文里不要解释或提到换歌。`);
+    }
+    return out.join('\n');
+}
+
+function updateInjection() {
+    const { setExtensionPrompt } = ctx();
+    if (!setExtensionPrompt) return;
+    // 放在聊天记录里、最后一条消息之前，系统身份：离生成最近，模型最重视
+    setExtensionPrompt(INJECT_KEY, buildInjection(), 1, 1, false, 0);
+}
+
+// ---------- char 换歌 ----------
+const BGM_RE = /\s*<bgm>\s*([^<]{1,12}?)\s*<\/bgm>\s*/gi;
+
+async function onCharMessage(id) {
+    const c = ctx();
+    const m = c.chat?.[id];
+    if (!m || m.is_user || m.is_system) return;
+    if (!m.mes || !BGM_RE.test(m.mes)) return;
+    BGM_RE.lastIndex = 0;
+    let mood = '';
+    m.mes = m.mes.replace(BGM_RE, (_, w) => { if (!mood) mood = w.trim(); return ''; }).trimEnd();
+    if (Array.isArray(m.swipes) && m.swipe_id != null) m.swipes[m.swipe_id] = m.mes;
+    // 翻译之类的扩展会把显示文本另存在 extra.display_text，酒馆渲染时优先用它，所以这里也要删
+    if (typeof m.extra?.display_text === 'string') m.extra.display_text = m.extra.display_text.replace(BGM_RE, '').trimEnd();
+    const updateMessageBlock = await stFn('updateMessageBlock');
+    updateMessageBlock?.(Number(id), m);
+    c.saveChat?.();
+    if (mood && settings.listen && settings.autoSwitch) switchToMood(mood);
+}
+
+function switchToMood(mood) {
+    const fits = (s) => s && s.id !== settings.songId && (s.mood === mood || (s.tags || []).includes(mood));
+    let pool = listSongIds(settings.listId).map(songById).filter(fits);
+    if (!pool.length) pool = library.index.filter(fits);
+    if (!pool.length) return;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    turnsSinceSwitch = 0;
+    loadSong(pick.id, true);
+    toast('info', `换了一首：《${pick.title}》`);
 }
 
 // ---------- 在线找歌词 ----------
@@ -1523,10 +1706,14 @@ function noteFrame(ts) {
     noteLast = ts;
     const moving = !audio.paused && !matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (moving) {
+        // 音符跟着这首歌自己的速度走：慢歌流得慢、疏，快歌流得快、密
+        const bpm = Math.min(Math.max(currentSong()?.analysis?.bpm || 97, 50), 180);
+        const beat = 60 / bpm;
+        const speed = SPEED * Math.sqrt(bpm / 97);
         noteClock += dt;
         beatAcc += dt;
-        if (beatAcc >= BEAT * 2) { beatAcc -= BEAT * 2; flows.forEach(f => spawnNote(f)); }
-        notes.forEach(n => { n.s += SPEED * dt; });
+        if (beatAcc >= beat * 2) { beatAcc -= beat * 2; flows.forEach(f => spawnNote(f)); }
+        notes.forEach(n => { n.s += speed * dt; });
     }
     for (let i = notes.length - 1; i >= 0; i--) {
         const n = notes[i];
@@ -1577,6 +1764,25 @@ function buildSettingsPanel() {
       <small>这两项需要联网，找到的东西会存进浏览器，以后离线也能看。</small>
       <div class="menu_button" id="se_fill">补全缺的歌词和封面</div>
       <hr>
+      <b>让 char 听见</b>
+      <label class="checkbox_label"><input type="checkbox" id="se_listen"><span>把正在放的歌告诉 char（暂停时不告诉）</span></label>
+      <label for="se_listen_mode">给模型看什么</label>
+      <select id="se_listen_mode" class="text_pole">
+        <option value="vibe">只给氛围（每轮约 40 token）</option>
+        <option value="lines">氛围 + 正在唱的几句（每轮约 80 token）</option>
+        <option value="full">氛围 + 整首歌词（每轮几百到上千 token）</option>
+      </select>
+      <small>char 会结合剧情把歌的情绪和意象化进正文，不会照搬歌词，也不会提到你在听歌。</small>
+      <label for="se_tag_mode">氛围标签怎么来</label>
+      <select id="se_tag_mode" class="text_pole">
+        <option value="rules">规则换算（零 token，只看快慢明暗）</option>
+        <option value="model">模型判断（每首歌导入时花一次，更准）</option>
+      </select>
+      <div class="menu_button" id="se_tag_all">给没有标签的歌生成标签</div>
+      <label class="checkbox_label"><input type="checkbox" id="se_switch"><span>char 根据剧情换歌</span></label>
+      <div class="flex-container alignitemscenter"><span>换过之后隔</span><input type="number" id="se_cooldown" class="text_pole" min="1" max="20" style="width:4em"><span>轮才能再换</span></div>
+      <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点 ··· → 改歌名 里手动改。</small>
+      <hr>
       <label for="se_tint">玻璃明暗</label>
       <select id="se_tint" class="text_pole"><option value="auto">跟随酒馆主题</option><option value="light">偏亮</option><option value="dark">偏暗</option></select>
       <hr>
@@ -1613,6 +1819,28 @@ function buildSettingsPanel() {
         toast('info', `开始给 ${ids.length} 首歌补全，在后台慢慢来`);
         enrich(ids);
     });
+    const li = $('#se_listen');
+    li.checked = settings.listen;
+    li.addEventListener('change', () => { settings.listen = li.checked; save(); updateInjection(); });
+    const lm = $('#se_listen_mode');
+    lm.value = settings.listenMode;
+    lm.addEventListener('change', () => { settings.listenMode = lm.value; save(); updateInjection(); });
+    const tm = $('#se_tag_mode');
+    tm.value = settings.tagMode;
+    tm.addEventListener('change', () => { settings.tagMode = tm.value; save(); });
+    $('#se_tag_all').addEventListener('click', async () => {
+        const ids = library.index.filter(s => !s.mood && s.tagBy !== 'user').map(s => s.id);
+        if (!ids.length) { toast('info', '每首歌都有标签了'); return; }
+        toast('info', `开始给 ${ids.length} 首歌生成标签，在后台慢慢来`);
+        const n = await tagSongs(ids);
+        if (n != null) toast('success', `生成了 ${n} 首歌的标签`); // 正在打别的标签时会排队，不报数
+    });
+    const sw = $('#se_switch');
+    sw.checked = settings.autoSwitch;
+    sw.addEventListener('change', () => { settings.autoSwitch = sw.checked; save(); updateInjection(); });
+    const cd = $('#se_cooldown');
+    cd.value = settings.switchCooldown;
+    cd.addEventListener('change', () => { settings.switchCooldown = Math.min(Math.max(Number(cd.value) || 3, 1), 20); cd.value = settings.switchCooldown; save(); });
     const tint = $('#se_tint');
     tint.value = settings.tint;
     tint.addEventListener('change', () => { settings.tint = tint.value; save(); applyLook(); });
@@ -1732,6 +1960,15 @@ async function init() {
     eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, () => { if (el.card.dataset.view === 'back' && ctx().groupId) refreshBack(); });
     if (eventTypes.PERSONA_CHANGED) eventSource.on(eventTypes.PERSONA_CHANGED, () => { if (el.card.dataset.view === 'back') refreshBack(); });
     eventSource.on(eventTypes.SETTINGS_UPDATED, () => { if (settings.tint === 'auto') applyLook(); });
+    // 每次生成前更新塞给模型的内容（歌、唱到哪了、能不能换歌）
+    eventSource.on(eventTypes.GENERATION_STARTED, () => updateInjection());
+    // 收到 char 的回复：数轮次、看有没有换歌标记
+    eventSource.on(eventTypes.MESSAGE_RECEIVED, (id, type) => { if (type !== 'first_message') turnsSinceSwitch++; onCharMessage(id); });
+    eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, (id) => onCharMessage(id));
+    // 换角色、换聊天时清掉，下次生成再算
+    eventSource.on(eventTypes.CHAT_CHANGED, () => { turnsSinceSwitch = 99; updateInjection(); });
+    audio.addEventListener('play', updateInjection);
+    audio.addEventListener('pause', updateInjection);
     console.log(TAG, '已加载');
 }
 
