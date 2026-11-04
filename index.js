@@ -1,12 +1,13 @@
 // 共享耳机 · 播放器本体
 // 悬浮球、卡片正面、歌词、歌单、背面耳机线，歌存在浏览器里。
-// 导入：文件（多种格式、视频取声音）、zip 压缩包、链接、拖拽、在线找开放授权音乐；联网自动配歌词（LRCLIB）和封面。
+// 导入：文件（多种格式、视频取声音）、zip 压缩包、链接、拖拽、在线找开放授权音乐、流行歌（GD音乐台，只在线播放）；联网自动配歌词（LRCLIB）和封面。
 
 import { BACK_SVG, BACK_VIEWBOX } from './earphones.js';
 import { readTags, guessFromFilename, normalizeName, parseLyrics } from './parsers.js';
 import { listZip, extractZip } from './zip.js';
 import { findLyrics, findCover, searchLyrics } from './online.js';
 import { searchFree, fetchThumb, MOODS } from './free.js';
+import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME } from './gd.js';
 import * as db from './db.js';
 
 const MODULE = 'shared_earphones';
@@ -204,6 +205,7 @@ function buildUI() {
   <div class="se-face se-import">
     <div class="se-head"><button class="se-back-btn" data-act="importback" aria-label="返回">‹</button><span class="se-import-title">导入歌曲</span></div>
     <div class="se-opts">
+      <button class="se-opt" data-act="impgd"><b>流行歌</b><small>按歌名歌手搜网易云等平台的歌，在线播放，不存进浏览器，没网时放不了</small></button>
       <button class="se-opt" data-act="impsearch"><b>在线找歌</b><small>搜开放授权的免费音乐，适合给剧情配氛围。曲库是英文的，有现成的中文情绪词可以点</small></button>
       <button class="se-opt" data-act="impfiles"><b>选文件</b><small>可以多选。mp3、m4a、flac、wav、ogg 都行；视频只取声音；同时选上 .lrc 会自动配到同名的歌</small></button>
       <button class="se-opt" data-act="impzip"><b>压缩包</b><small>把整个文件夹打成 zip 一次导入，里面同名的 .lrc 也会配上</small></button>
@@ -225,6 +227,14 @@ function buildUI() {
     <div class="se-chips">${MOODS.map(([zh, en]) => `<button data-mood="${en}">${zh}</button>`).join('')}</div>
     <div class="se-rows se-music-rows"></div>
     <div class="se-tip">开放授权音乐，来自 Openverse（大多是 Jamendo 上的独立音乐人）</div>
+  </div>
+
+  <div class="se-face se-gdsearch">
+    <div class="se-head"><button class="se-back-btn" data-act="gdback" aria-label="返回">‹</button><span>流行歌</span></div>
+    <div class="se-searchbar"><input class="se-gq" type="search" enterkeyhint="search" placeholder="歌名 歌手，比如 十年 陈奕迅"><button class="se-primary" data-act="gdgo">搜索</button></div>
+    <div class="se-chips">${GD_SOURCES.map(([k, zh]) => `<button data-gdsrc="${k}"${k === 'netease' ? ' class="se-on"' : ''}>${zh}</button>`).join('')}</div>
+    <div class="se-rows se-gd-rows"></div>
+    <div class="se-tip">来自 GD音乐台（music.gdstudio.xyz），只在线播放，每次放的时候现取链接。对方限制 5 分钟 50 次请求</div>
   </div>
 
   <div class="se-face se-back">
@@ -249,6 +259,9 @@ function buildUI() {
     el.q = $('.se-q', root);
     el.mq = $('.se-mq', root);
     el.musicRows = $('.se-music-rows', root);
+    el.gq = $('.se-gq', root);
+    el.gdRows = $('.se-gd-rows', root);
+    el.gdFace = $('.se-gdsearch', root);
     el.notes = $('#se-notes', root);
     bindUI();
 }
@@ -340,6 +353,8 @@ function bindUI() {
         if (e.target.closest('.se-flip')) { flip(); return; }
         const mood = e.target.closest('[data-mood]');
         if (mood) { el.mq.value = mood.dataset.mood; $$('[data-mood]', el.card).forEach(b => b.classList.toggle('se-on', b === mood)); runMusicSearch(true); return; }
+        const gsrc = e.target.closest('[data-gdsrc]');
+        if (gsrc) { gdState.source = gsrc.dataset.gdsrc; $$('[data-gdsrc]', el.card).forEach(b => b.classList.toggle('se-on', b === gsrc)); if (el.gq.value.trim()) runGDSearch(true); return; }
         const mode = e.target.closest('[data-mode]');
         if (mode) { settings.playMode = mode.dataset.mode; save(); renderModes(); }
     });
@@ -384,6 +399,8 @@ function bindUI() {
     el.q.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); runLyricSearch(); } });
     el.mq.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); $$('[data-mood]', el.card).forEach(b => b.classList.remove('se-on')); runMusicSearch(true); } });
 
+    el.gq.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); runGDSearch(true); } });
+
     // 背面三行字
     $$('[data-key]', el.card).forEach(node => {
         node.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); node.blur(); } });
@@ -409,8 +426,9 @@ function toggleCard(force) {
 }
 
 function setView(view) {
-    if (view !== 'musicsearch') stopPreview();
+    if (view !== 'musicsearch' && view !== 'gdsearch') stopPreview();
     el.card.dataset.view = view;
+    el.gdFace.style.display = view === 'gdsearch' ? 'block' : '';
     if (view === 'lists') renderLists();
     if (view === 'list') renderSongList();
     if (view === 'lyrics') renderLyrics(true);
@@ -457,6 +475,10 @@ async function onAction(act) {
         case 'musicback': return setView('import');
         case 'musicgo': $$('[data-mood]', el.card).forEach(b => b.classList.remove('se-on')); return runMusicSearch(true);
         case 'musicmore': return runMusicSearch(false);
+        case 'impgd': setView('gdsearch'); if (!el.gq.value) el.gq.focus(); return;
+        case 'gdback': return setView('import');
+        case 'gdgo': return runGDSearch(true);
+        case 'gdmore': return runGDSearch(false);
     }
 }
 
@@ -467,10 +489,17 @@ async function loadSong(id, autoplay) {
     const s = songById(id);
     if (!s) return;
     const blob = await db.getAudio(id);
-    if (!blob && !s.url) { toast('error', `《${s.title}》的音频找不到了，可能被浏览器清理了`); return; }
+    if (!blob && !s.url && !s.gd) { toast('error', `《${s.title}》的音频找不到了，可能被浏览器清理了`); return; }
+    let src = s.url;
+    if (!blob && s.gd) {
+        // 流行歌：每次现取链接
+        try { src = await resolveGD(s.gd); } catch (e) { toast('warning', e.message || 'GD音乐台暂时连不上'); return; }
+        if (!src) { toast('warning', `《${s.title}》在${GD_NAME[s.gd.source] || '这个源'}暂时放不了，可以换个源再搜一次`); return; }
+    }
     if (audioUrl) URL.revokeObjectURL(audioUrl);
     audioUrl = blob ? URL.createObjectURL(blob) : null;
-    audio.src = audioUrl || s.url;
+    gdRetried = false;
+    audio.src = audioUrl || src;
     settings.songId = id;
     save();
     await loadLyrics(id);
@@ -519,7 +548,28 @@ audio.addEventListener('loadedmetadata', () => {
     const s = currentSong();
     if (s && !s.duration && isFinite(audio.duration)) { s.duration = audio.duration; db.saveIndex(library.index); }
 });
-audio.addEventListener('error', () => { if (audio.src) toast('error', '这首歌播放不了，可能是格式不支持'); });
+let gdRetried = false;
+audio.addEventListener('error', async () => {
+    if (!audio.src) return;
+    const s = currentSong();
+    // 流行歌的链接放久了会失效：重新取一次，从刚才的位置接着放
+    if (s?.gd && !gdRetried) {
+        gdRetried = true;
+        const at = audio.currentTime || 0;
+        try {
+            const url = await resolveGD(s.gd, true);
+            if (url) {
+                audio.src = url;
+                audio.addEventListener('loadedmetadata', () => { if (at) audio.currentTime = at; }, { once: true });
+                await audio.play();
+                return;
+            }
+        } catch (e) { console.warn(TAG, e); }
+        toast('error', `《${s.title}》现在放不了，可能是这个源暂时没有它`);
+        return;
+    }
+    toast('error', '这首歌播放不了，可能是格式不支持');
+});
 
 async function updateMediaSession() {
     if (!('mediaSession' in navigator)) return;
@@ -652,7 +702,7 @@ function renderSongList() {
         const s = songById(id);
         const now = id === settings.songId ? ' se-playing-row' : '';
         const tags = [s.artist || '未知歌手'];
-        if (s.url && !s.local) tags.push('在线');
+        if ((s.url && !s.local) || s.gd) tags.push('在线');
         if (s.instrumental) tags.push('纯音乐');
         if (s.license) tags.push(s.license);
         return `<div class="se-song" data-song="${esc(id)}">
@@ -968,10 +1018,12 @@ const savedFree = new Set();    // 这次搜索里已经收下的
 function stopPreview() {
     if (!preview.paused) preview.pause();
     previewIdx = -1;
+    gdPreviewIdx = -1;
     $$('[data-prev]', el.musicRows || document).forEach(b => { b.textContent = '▶'; });
+    $$('[data-gprev]', el.gdRows || document).forEach(b => { b.textContent = '▶'; });
 }
 preview.addEventListener('ended', stopPreview);
-preview.addEventListener('error', () => { if (previewIdx >= 0) { toast('warning', '这首试听不了'); stopPreview(); } });
+preview.addEventListener('error', () => { if (previewIdx >= 0 || gdPreviewIdx >= 0) { toast('warning', '这首试听不了'); stopPreview(); } });
 
 async function runMusicSearch(reset) {
     const q = el.mq.value.trim();
@@ -1059,6 +1111,101 @@ async function saveFreeTrack(i, btn) {
     if (!settings.songId) await loadSong(id, false);
     render();
     toast('success', `《${m.title}》收进歌库了`);
+}
+
+// ======================================================
+// 流行歌（GD音乐台，只在线播放）
+// ======================================================
+let gdState = { source: 'netease', q: '', page: 0, items: [], hasMore: false, busy: false };
+let gdPreviewIdx = -1;
+const gdKey = (m) => `${m.source}:${m.id}`;
+const haveGD = (m) => library.index.some(s => s.gd && gdKey(s.gd) === gdKey(m));
+
+async function runGDSearch(reset) {
+    const q = el.gq.value.trim();
+    if (!q || gdState.busy) return;
+    if (reset) {
+        stopPreview();
+        gdState = { ...gdState, q, page: 0, items: [], hasMore: false, busy: false };
+        el.gdRows.innerHTML = '<div class="se-blank">正在搜…</div>';
+    }
+    gdState.busy = true;
+    try {
+        const r = await searchGD(gdState.q, gdState.source, gdState.page + 1);
+        gdState.page++;
+        const seen = new Set(gdState.items.map(gdKey));
+        gdState.items.push(...r.items.filter(m => !seen.has(gdKey(m))));
+        gdState.hasMore = r.hasMore;
+    } catch (e) {
+        if (reset) el.gdRows.innerHTML = `<div class="se-blank">${esc(e.message || 'GD音乐台暂时连不上')}</div>`;
+        else toast('warning', e.message || 'GD音乐台暂时连不上');
+        return;
+    } finally {
+        gdState.busy = false;
+    }
+    renderGDResults();
+}
+
+function renderGDResults() {
+    if (!gdState.items.length) {
+        el.gdRows.innerHTML = '<div class="se-blank">没搜到。换个写法，或者点上面换个源试试</div>';
+        return;
+    }
+    el.gdRows.innerHTML = gdState.items.map((m, i) => {
+        const have = haveGD(m);
+        const sub = [m.artist || '未知歌手', m.album].filter(Boolean).join(' · ');
+        return `<div class="se-row se-music-row">
+  <button class="se-mini-btn" data-gprev="${i}" aria-label="试听">${gdPreviewIdx === i ? '❚❚' : '▶'}</button>
+  <div class="se-row-main"><div>${esc(m.title)}</div><div class="se-row-sub">${esc(sub)}</div></div>
+  <button class="se-mini-btn${have ? ' se-done' : ''}" data-gsave="${i}" aria-label="${have ? '已加进歌库' : '加进歌库'}">${have ? '✓' : '＋'}</button>
+</div>`;
+    }).join('') + (gdState.hasMore ? '<button class="se-more-results" data-act="gdmore">加载更多</button>' : '');
+    $$('[data-gprev]', el.gdRows).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); toggleGDPreview(Number(b.dataset.gprev)); }));
+    $$('[data-gsave]', el.gdRows).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); saveGDTrack(Number(b.dataset.gsave), b); }));
+}
+
+async function toggleGDPreview(i) {
+    const m = gdState.items[i];
+    if (!m) return;
+    if (gdPreviewIdx === i) { stopPreview(); return; }
+    stopPreview();
+    if (!audio.paused) audio.pause();
+    gdPreviewIdx = i;
+    const b = $(`[data-gprev="${i}"]`, el.gdRows);
+    if (b) b.textContent = '…';
+    let url = '';
+    try { url = await resolveGD(m); } catch (e) { toast('warning', e.message); }
+    if (gdPreviewIdx !== i) return; // 等链接的时候又点了别的
+    if (!url) { toast('warning', '这首在这个源放不了，换个源试试'); stopPreview(); return; }
+    preview.src = url;
+    preview.play().catch(() => { toast('warning', '这首试听不了'); stopPreview(); });
+    if (b) b.textContent = '❚❚';
+}
+
+async function saveGDTrack(i, btn) {
+    const m = gdState.items[i];
+    if (!m || btn.classList.contains('se-done') || btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    btn.textContent = '…';
+    // 只记来源和 ID，不下载音频
+    const id = uid();
+    library.index.push({
+        id, title: m.title, artist: m.artist, album: m.album, file: m.title,
+        hasCover: false, hasLyrics: false, duration: 0, added: Date.now(),
+        gd: { source: m.source, id: m.id }, source: `GD音乐台 · ${GD_NAME[m.source] || m.source}`, local: false,
+    });
+    const cover = await fetchGDCover(m.source, m.picId);
+    if (cover) { await db.putCover(id, cover); songById(id).hasCover = true; }
+    if (importTarget) library.playlists.find(p => p.id === importTarget)?.songIds.push(id);
+    await db.saveIndex(library.index);
+    await db.savePlaylists(library.playlists);
+    delete btn.dataset.busy;
+    btn.textContent = '✓';
+    btn.classList.add('se-done');
+    if (!settings.songId) await loadSong(id, false);
+    render();
+    toast('success', `《${m.title}》加进歌库了`);
+    enrich([id], true); // 歌词照旧去 LRCLIB 配
 }
 
 // ======================================================
