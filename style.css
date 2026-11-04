@@ -131,7 +131,9 @@
 #se-card[data-view="lyrics"] .se-lyrics,
 #se-card[data-view="lists"] .se-lists,
 #se-card[data-view="list"] .se-list,
-#se-card[data-view="back"] .se-back { display: block; }
+#se-card[data-view="back"] .se-back,
+#se-card[data-view="import"] .se-import,
+#se-card[data-view="lrcsearch"] .se-lrcsearch { display: block; }
 
 #se-card .se-top { display: flex; align-items: center; gap: 12px; }
 #se-card .se-cover {
@@ -182,7 +184,7 @@
 #se-card .se-line.se-now { color: var(--se-ink); opacity: 1; transform: scale(1.06); }
 #se-card .se-lines.se-plain .se-line { opacity: .9; color: var(--se-ink); cursor: default; font-weight: 500; }
 #se-card .se-empty { height: 210px; margin-top: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-size: 14px; color: var(--se-sub); }
-#se-card .se-empty div { display: flex; gap: 8px; }
+#se-card .se-empty div { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 #se-card .se-empty button { flex: none; white-space: nowrap; }
 
 /* ---------- 歌单 ---------- */
@@ -209,6 +211,26 @@
 #se-card .se-actions button, #se-card .se-empty button { flex: 1; text-align: center; font-size: 14px; padding: 10px 14px; border-radius: 12px; background: var(--se-chip); color: var(--se-ink); }
 #se-card .se-actions button.se-primary, #se-card .se-empty button.se-primary { background: var(--se-solid); color: var(--se-solid-ink); }
 #se-card .se-blank { padding: 26px 0; text-align: center; color: var(--se-sub); font-size: 14px; }
+
+/* ---------- 导入 ---------- */
+#se-card .se-opts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+#se-card .se-opt { display: block; padding: 12px 14px; border-radius: 14px; background: var(--se-chip); color: var(--se-ink); }
+#se-card .se-opt b { display: block; font-size: 15px; font-weight: 600; }
+#se-card .se-opt small { display: block; font-size: 12px; line-height: 1.45; color: var(--se-sub); margin-top: 3px; }
+#se-card .se-tip { font-size: 12px; color: var(--se-sub); text-align: center; margin-top: 10px; }
+#se-card .se-row-acts { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 2px 10px; border-bottom: 1px solid var(--se-line); }
+#se-card .se-row-acts button { font-size: 13px; padding: 6px 11px; border-radius: 9px; background: var(--se-chip); color: var(--se-ink); }
+#se-card .se-row-acts .se-danger { color: #d43a2f; }
+
+/* ---------- 在线找歌词 ---------- */
+#se-card .se-searchbar { display: flex; gap: 8px; margin: 10px 0 4px; }
+#se-card .se-searchbar input {
+    flex: 1; min-width: 0; margin: 0; height: 38px; padding: 0 12px;
+    border-radius: 10px; border: 1px solid var(--se-line); background: var(--se-chip);
+    color: var(--se-ink); font: inherit; font-size: 16px; outline: none; box-shadow: none;
+}
+#se-card .se-searchbar input:focus { border-color: var(--se-icon-sub); }
+#se-card .se-searchbar button { padding: 0 16px; border-radius: 10px; background: var(--se-solid); color: var(--se-solid-ink); font-size: 14px; display: flex; align-items: center; }
 
 /* ---------- 背面 ---------- */
 #se-card .se-back { padding: 12px 10px 10px; }
