@@ -59,31 +59,64 @@
     background: var(--se-tint-liquid);
     -webkit-backdrop-filter: blur(7px) saturate(190%) brightness(1.06) !important;
     backdrop-filter: blur(7px) saturate(190%) brightness(1.06) !important;
-    box-shadow: inset 0 0 18px rgba(255, 255, 255, .14), inset 0 0 3px rgba(255, 255, 255, .18), 0 16px 40px rgba(0, 0, 0, .16);
+    box-shadow:
+        inset 0 1px 0 var(--se-hl-inner),          /* 顶边一道细亮线 */
+        inset 0 -1px 0 var(--se-hl-bottom, rgba(255, 255, 255, .06)),
+        inset 0 0 18px rgba(255, 255, 255, .12),
+        0 0 0 .5px var(--se-hairline),            /* 浅色背景上也看得出轮廓 */
+        0 16px 40px rgba(0, 0, 0, .18);
 }
 
+/* 液态玻璃的白色高光边：左上角最亮，顺着上边和左边淡出；右下角一道弱一点的反光；其余地方留一圈很淡的底边。
+   用按像素算的径向渐变打在两个角上，卡片再宽，高光的长度也不变，不会被拉稀 */
 #se-root.se-liquid .se-glass::before {
     content: "";
     position: absolute;
     inset: 0;
+    z-index: 2;
     border-radius: inherit;
-    padding: 1px;
+    padding: var(--se-hl-width);
     pointer-events: none;
-    filter: blur(.4px);
-    background: conic-gradient(from 200deg at 50% 50%, rgba(255, 255, 255, 0) 0deg, var(--se-rim) 50deg, rgba(255, 255, 255, 0) 110deg, rgba(255, 255, 255, 0) 200deg, rgba(255, 255, 255, .28) 240deg, rgba(255, 255, 255, 0) 300deg);
+    background:
+        radial-gradient(var(--se-hl-size) at 0 0, var(--se-hl-strong), transparent 70%),
+        radial-gradient(var(--se-hl-size-2) at 100% 100%, var(--se-hl-soft), transparent 70%),
+        linear-gradient(var(--se-hl-base), var(--se-hl-base));
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
 }
 
+/* 玻璃里面左上角一层很淡的反光 */
 #se-root.se-liquid .se-glass::after {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    background: radial-gradient(90% 45% at 12% -8%, rgba(255, 255, 255, .16), transparent 60%);
+    background: radial-gradient(90% 45% at 12% -8%, rgba(255, 255, 255, .18), transparent 60%);
 }
+
+/* 高光的强弱：浅色、深色各一套；悬浮球小，高光范围跟着缩小 */
+#se-root {
+    --se-hl-width: 1.5px;
+    --se-hl-size: 240px 130px;
+    --se-hl-size-2: 220px 110px;
+    --se-hl-strong: rgba(255, 255, 255, 1);
+    --se-hl-soft: rgba(255, 255, 255, .8);
+    --se-hl-base: rgba(255, 255, 255, .5);
+    --se-hl-inner: rgba(255, 255, 255, .7);
+    --se-hairline: rgba(0, 0, 0, .16);
+    --se-hl-bottom: rgba(0, 0, 0, .06);      /* 浅色玻璃底边压一道很淡的暗线，白色高光才衬得出来 */
+}
+#se-root.se-dark {
+    --se-hl-strong: rgba(255, 255, 255, .9);
+    --se-hl-soft: rgba(255, 255, 255, .55);
+    --se-hl-base: rgba(255, 255, 255, .16);
+    --se-hl-inner: rgba(255, 255, 255, .22);
+    --se-hairline: rgba(0, 0, 0, .35);
+    --se-hl-bottom: rgba(255, 255, 255, .06);
+}
+#se-root #se-ball { --se-hl-size: 40px 40px; --se-hl-size-2: 34px 34px; --se-hl-width: 1.2px; }
 
 /* ---------- 悬浮球 ---------- */
 #se-ball {
