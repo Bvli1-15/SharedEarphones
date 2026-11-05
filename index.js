@@ -264,7 +264,7 @@ function buildUI() {
       <svg viewBox="${BACK_VIEWBOX}" aria-label="两个人共用一副耳机">${BACK_SVG}</svg>
       <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:52.3%"></div>
       <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:52.3%"></div>
-      <div class="se-longtext" data-key="long" contenteditable="plaintext-only" spellcheck="false" data-placeholder="点这里写一句话"></div>
+      <textarea class="se-longtext" data-key="long" rows="2" maxlength="60" spellcheck="false" placeholder="点这里写一句话"></textarea>
     </div>
   </div>
 </div>`;
@@ -461,11 +461,15 @@ function bindUI() {
 
     el.gq.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); runGDSearch(true); } });
 
-    // 背面三行字
+    // 背面三行字：两个名字是 contenteditable，一句话是 textarea（iPhone Safari 里 -webkit-box 的可编辑区域打不进字）
     $$('[data-key]', el.card).forEach(node => {
-        node.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); node.blur(); } });
-        node.addEventListener('input', () => saveTexts());
-        node.addEventListener('paste', e => {
+        node.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); node.blur(); } });
+        node.addEventListener('input', () => {
+            // 一句话不要换行（粘贴进来的换行也换成空格）
+            if (node.tagName === 'TEXTAREA' && /\n/.test(node.value)) node.value = node.value.replace(/\s*\n\s*/g, ' ');
+            saveTexts();
+        });
+        if (node.tagName !== 'TEXTAREA') node.addEventListener('paste', e => {
             e.preventDefault();
             const text = (e.clipboardData?.getData('text/plain') || '').replace(/\s*\n\s*/g, ' ');
             document.execCommand('insertText', false, text);
@@ -696,10 +700,14 @@ function renderLists() {
     const rows = [{ id: ALL, name: '全部歌曲', songIds: library.index.map(x => x.id) }, ...library.playlists];
     el.plRows.innerHTML = rows.map(p => {
         const inIt = s && p.songIds.includes(s.id);
-        const lock = p.id === ALL ? ' se-locked' : '';
-        return `<div class="se-row" data-id="${esc(p.id)}">
-  <div class="se-row-main" data-open="${esc(p.id)}"><div>${esc(p.name)}<small>${listSongIds(p.id).length} 首</small></div></div>
-  ${s ? `<button class="se-check${inIt ? ' se-on' : ''}${lock}" data-check="${esc(p.id)}" aria-label="${inIt ? '从这个歌单移出当前歌' : '把当前歌加进这个歌单'}">${inIt ? '✓' : ''}</button>` : ''}
+        const playing = !!s && p.id === settings.listId;   // 正在按这个歌单放
+        // 右边的圈：当前这首在不在这个歌单里。「全部歌曲」永远都在，不画圈
+        const check = s && p.id !== ALL
+            ? `<button class="se-check${inIt ? ' se-on' : ''}" data-check="${esc(p.id)}" aria-label="${inIt ? '从这个歌单移出当前歌' : '把当前歌加进这个歌单'}">${inIt ? '✓' : ''}</button>`
+            : '';
+        return `<div class="se-row${playing ? ' se-playing-row' : ''}" data-id="${esc(p.id)}">
+  <div class="se-row-main" data-open="${esc(p.id)}"><div>${esc(p.name)}<small>${listSongIds(p.id).length} 首</small></div>${playing ? '<div class="se-row-sub">正在播放</div>' : ''}</div>
+  ${check}
 </div>`;
     }).join('') + '<div class="se-row se-new" data-newlist><div class="se-row-main">＋ 新建歌单</div></div>';
 
@@ -1756,16 +1764,19 @@ async function refreshBack() {
     const defaults = { left: c.name2 || 'char', right: c.name1 || '你', long: '' };
     $$('[data-key]', el.card).forEach(n => {
         if (document.activeElement === n) return;
-        n.textContent = saved[n.dataset.key] ?? defaults[n.dataset.key];
+        setText(n, saved[n.dataset.key] ?? defaults[n.dataset.key]);
     });
 }
+
+const getText = (n) => (n.tagName === 'TEXTAREA' ? n.value : n.textContent);
+const setText = (n, v) => { if (n.tagName === 'TEXTAREA') n.value = v; else n.textContent = v; };
 
 let textTimer = null;
 function saveTexts() {
     clearTimeout(textTimer);
     textTimer = setTimeout(() => {
         const out = {};
-        $$('[data-key]', el.card).forEach(n => { out[n.dataset.key] = n.textContent.trim(); });
+        $$('[data-key]', el.card).forEach(n => { out[n.dataset.key] = getText(n).trim(); });
         settings.texts[chatKey()] = out;
         save();
     }, 400);

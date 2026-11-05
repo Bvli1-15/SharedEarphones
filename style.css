@@ -35,7 +35,7 @@
     --se-icon: #F5F5F7;
     --se-icon-sub: rgba(235, 235, 245, .6);
     --se-chip: rgba(120, 120, 128, .28);
-    --se-chip-on: rgba(255, 255, 255, .18);
+    --se-chip-on: rgba(255, 255, 255, .34);
     --se-line: rgba(235, 235, 245, .12);
     --se-solid: #F5F5F7;
     --se-solid-ink: #1C1C1E;
@@ -210,7 +210,6 @@
 #se-card .se-row.se-playing-row .se-row-main > div:first-child::before { content: "♪ "; }
 #se-card .se-check { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--se-icon-sub); display: flex !important; align-items: center; justify-content: center; font-size: 12px; flex: none; }
 #se-card .se-check.se-on { background: var(--se-solid); border-color: var(--se-solid); color: var(--se-solid-ink); }
-#se-card .se-check.se-locked { opacity: .45; pointer-events: none; }
 #se-card .se-more { width: 32px; height: 28px; display: flex !important; align-items: center; justify-content: center; color: var(--se-sub); font-size: 18px; letter-spacing: 1px; flex: none; }
 #se-card .se-new { color: var(--se-sub); cursor: pointer; }
 #se-card .se-actions { display: flex; gap: 8px; margin-top: 12px; }
@@ -279,24 +278,33 @@
     border-radius: 6px;
     text-align: center;
 }
+/* 一句话：原生 textarea。酒馆给 textarea 有全局样式（宽度、边框、背景、占位字颜色），这里都盖掉 */
 #se-card .se-longtext {
     position: absolute;
     left: 28%;
-    right: 28%;
     top: 59.3%;
-    text-align: center;
+    width: 44%;
+    height: calc(2 * 1.55em);
+    max-height: none;
+    margin: 0;
+    padding: 0 .3em;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    box-shadow: none;
+    resize: none;
+    overflow: hidden;
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: inherit;
     font-size: 2.7cqw;
     line-height: 1.55;
+    text-align: center;
     color: var(--se-sub);
     outline: none;
-    border-radius: 6px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
 }
-#se-card .se-label:focus, #se-card .se-longtext:focus { background: rgba(255, 255, 255, .22); -webkit-line-clamp: unset; overflow: visible; }
-#se-card .se-longtext:empty::before { content: attr(data-placeholder); opacity: .5; }
+#se-card .se-longtext::placeholder { color: var(--se-sub) !important; opacity: .5; }
+#se-card .se-label:focus, #se-card .se-longtext:focus { background: rgba(255, 255, 255, .22); outline: none; }
 
 /* ---------- 扩展设置面板的开关（和预设里提示词的开关一样） ---------- */
 .se-settings .se-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; cursor: pointer; user-select: none; -webkit-user-select: none; }
