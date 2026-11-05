@@ -20,7 +20,8 @@ const DEFAULTS = Object.freeze({
     ballVisible: true,
     ballPos: null,          // {x, y}：球中心在屏幕里的比例
     ballIcon: '',           // 自定义图标（压缩后的 dataURL）
-    cardY: null,            // 卡片中心在屏幕高度里的比例；null 就是正中间
+    cardY: null,            // 手机上：卡片中心在屏幕高度里的比例；null 就是正中间（手机上只能上下挪）
+    cardPC: null,           // 电脑上：卡片中心的位置 {x, y}（比例）；电脑上可以上下左右随便挪
     cardOpen: false,        // 卡片开着没有（关了悬浮球时，刷新后照原样留着）
     material: 'frost',      // frost 磨砂 / liquid 液态玻璃
     tint: 'auto',           // auto 跟随酒馆主题 / light / dark
@@ -339,15 +340,28 @@ function cardMinTop() {
     return (r && r.height ? Math.max(r.bottom, 0) : 0) + 6;
 }
 
-/** 卡片水平居中；centerY 不给就用记住的位置（默认屏幕正中）。 */
-function placeCard(centerY) {
+/** 是不是电脑：有鼠标（能悬停、指得准）。手机、平板的手指都不算。 */
+const isDesktop = () => matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+/**
+ * 摆卡片。手机上永远水平居中，只记上下位置；电脑上上下左右都记。
+ * 两边的位置分开存，电脑上拖到角落不会影响手机。
+ * centerX / centerY 不给就用记住的位置（默认屏幕正中）。
+ */
+function placeCard(centerY, centerX) {
     if (el.card.classList.contains('se-hidden')) return;
     const W = window.innerWidth, H = window.innerHeight;
     const cw = el.card.offsetWidth, ch = el.card.offsetHeight;
+    const desk = isDesktop();
     const minTop = cardMinTop();
     const maxTop = Math.max(minTop, H - ch - 8);
-    const cy = centerY ?? (settings.cardY ?? 0.5) * H;
-    el.card.style.left = Math.max((W - cw) / 2, 0) + 'px';
+    const cy = centerY ?? ((desk ? settings.cardPC?.y : settings.cardY) ?? 0.5) * H;
+    let left = Math.max((W - cw) / 2, 0);
+    if (desk && cw < W - 16) {
+        const cx = centerX ?? (settings.cardPC?.x ?? 0.5) * W;
+        left = Math.min(Math.max(cx - cw / 2, 8), W - cw - 8);
+    }
+    el.card.style.left = left + 'px';
     el.card.style.top = Math.min(Math.max(cy - ch / 2, minTop), maxTop) + 'px';
 }
 
@@ -385,30 +399,33 @@ function bindUI() {
     el.ball.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCard(); } });
     window.addEventListener('resize', placeBall);
 
-    // 卡片：按住空白处（封面、歌名、标题栏）上下拖；按钮、进度条、列表、歌词这些地方不算
+    // 卡片：按住空白处（封面、歌名、标题栏）拖。手机上只能上下拖，电脑上上下左右都行；按钮、进度条、列表、歌词这些地方不算
     const NO_DRAG = 'button, input, select, textarea, a, label, [contenteditable], .se-track, .se-lines, .se-rows, .se-chips, .se-seg, .se-opts';
     let cdrag = null;
     el.card.addEventListener('pointerdown', e => {
         if (e.button > 0 || e.target.closest(NO_DRAG)) return;
         const r = el.card.getBoundingClientRect();
-        cdrag = { id: e.pointerId, sy: e.clientY, cy: r.top + r.height / 2, moved: false };
+        cdrag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, cx: r.left + r.width / 2, cy: r.top + r.height / 2, moved: false, free: isDesktop() };
     });
     el.card.addEventListener('pointermove', e => {
         if (!cdrag || e.pointerId !== cdrag.id) return;
         const dy = e.clientY - cdrag.sy;
+        const dx = cdrag.free ? e.clientX - cdrag.sx : 0;
         if (!cdrag.moved) {
-            if (Math.abs(dy) < 6) return;
+            if (Math.hypot(dx, dy) < 6) return;
             cdrag.moved = true;
             el.card.setPointerCapture(e.pointerId);
             el.card.classList.add('se-dragging');
         }
-        placeCard(cdrag.cy + dy);
+        placeCard(cdrag.cy + dy, cdrag.free ? cdrag.cx + dx : undefined);
     });
     const endCardDrag = () => {
         if (!cdrag) return;
         if (cdrag.moved) {
             const r = el.card.getBoundingClientRect();
-            settings.cardY = (r.top + r.height / 2) / window.innerHeight;
+            const y = (r.top + r.height / 2) / window.innerHeight;
+            if (isDesktop()) settings.cardPC = { x: (r.left + r.width / 2) / window.innerWidth, y };
+            else settings.cardY = y;
             save();
             el.card.classList.remove('se-dragging');
         }
