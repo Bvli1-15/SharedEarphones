@@ -1,5 +1,6 @@
 // 背面耳机线图：根据律的原始 SVG 改的，所有 id 都加了 se- 前缀避免和酒馆撞名
-export const BACK_VIEWBOX = '-143 -5 1087 795';
+// 上边从头像圆顶上一点开始，不留空白（原来是 -5，留了一截给声波按钮）
+export const BACK_VIEWBOX = '-143 57 1087 733';
 export const BACK_SVG = `<defs>
   <filter id="se-bud" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="1.5" stdDeviation="1.6" flood-color="#5a4a3a" flood-opacity=".18"/></filter>
   <filter id="se-ring" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity=".08"/></filter>

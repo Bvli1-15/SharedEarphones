@@ -258,8 +258,11 @@
 #se-card .se-more-results { display: block !important; width: 100%; text-align: center; padding: 11px 0; font-size: 14px; color: var(--se-sub); }
 
 /* ---------- 背面 ---------- */
-#se-card .se-back { padding: 12px 10px 10px; }
-#se-card .se-back .se-flip { position: absolute; top: 10px; right: 14px; z-index: 2; }
+#se-card .se-back { padding: 8px 10px 10px; }
+/* 背面的两个隐形按钮：右上角点一下翻回正面；耳机线中间的分叉是播放 / 暂停 */
+#se-card .se-hot { position: absolute; z-index: 3; background: transparent; }
+#se-card .se-hot-flip { top: 0; right: 0; width: 20%; height: 26%; }
+#se-card .se-hot-play { left: 64%; top: 95.4%; width: 44px; height: 44px; border-radius: 50%; transform: translate(-50%, -50%); }
 #se-card .se-stage { position: relative; container-type: inline-size; }
 #se-card .se-stage svg { display: block; width: 100%; height: auto; overflow: visible; }
 #se-card .se-label {
@@ -278,9 +281,9 @@
 }
 #se-card .se-longtext {
     position: absolute;
-    left: 32%;
-    right: 24%;
-    top: 62.5%;
+    left: 28%;
+    right: 28%;
+    top: 59.3%;
     text-align: center;
     font-size: 2.7cqw;
     line-height: 1.55;

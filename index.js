@@ -8,7 +8,7 @@ import { readTags, guessFromFilename, normalizeName, parseLyrics } from './parse
 import { listZip, extractZip } from './zip.js';
 import { findLyrics, findCover, searchLyrics } from './online.js';
 import { searchFree, fetchThumb, MOODS } from './free.js';
-import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME } from './gd.js';
+import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME, neteaseSongId, isNeteaseShort, neteaseInfo } from './gd.js';
 import { analyzeAudio, tagsByRules, describeAnalysis, MOOD_WORDS } from './analyze.js';
 import * as db from './db.js';
 
@@ -21,6 +21,7 @@ const DEFAULTS = Object.freeze({
     ballPos: null,          // {x, y}：球中心在屏幕里的比例
     ballIcon: '',           // 自定义图标（压缩后的 dataURL）
     cardY: null,            // 卡片中心在屏幕高度里的比例；null 就是正中间
+    cardOpen: false,        // 卡片开着没有（关了悬浮球时，刷新后照原样留着）
     material: 'frost',      // frost 磨砂 / liquid 液态玻璃
     tint: 'auto',           // auto 跟随酒馆主题 / light / dark
     playMode: 'order',      // order 顺序 / one 单曲循环 / shuffle 随机
@@ -228,7 +229,7 @@ function buildUI() {
       <button class="se-opt" data-act="impsearch"><b>在线找歌</b><small>搜开放授权的免费音乐，适合给剧情配氛围。曲库是英文的，有现成的中文情绪词可以点</small></button>
       <button class="se-opt" data-act="impfiles"><b>选文件</b><small>可以多选。mp3、m4a、flac、wav、ogg 都行；视频只取声音；同时选上 .lrc 会自动配到同名的歌</small></button>
       <button class="se-opt" data-act="impzip"><b>压缩包</b><small>把整个文件夹打成 zip 一次导入，里面同名的 .lrc 也会配上</small></button>
-      <button class="se-opt" data-act="implinks"><b>粘贴链接</b><small>音频文件的直链，一行一个。能下载的存进浏览器，下载不了的就在线播放</small></button>
+      <button class="se-opt" data-act="implinks"><b>粘贴链接</b><small>音频文件的直链，一行一个。能下载的存进浏览器，下载不了的就在线播放。网易云的歌曲链接或分享文字也能直接粘</small></button>
     </div>
     <div class="se-tip">电脑上也可以直接把文件拖到这张卡片上。</div>
   </div>
@@ -257,11 +258,12 @@ function buildUI() {
   </div>
 
   <div class="se-face se-back">
-    <button class="se-flip" aria-label="翻回正面">${BARS}</button>
     <div class="se-stage">
+      <button class="se-hot se-hot-flip" data-act="flip" aria-label="翻回正面"></button>
+      <button class="se-hot se-hot-play" data-act="toggle" aria-label="播放或暂停"></button>
       <svg viewBox="${BACK_VIEWBOX}" aria-label="两个人共用一副耳机">${BACK_SVG}</svg>
-      <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:56%"></div>
-      <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:56%"></div>
+      <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:52.3%"></div>
+      <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:52.3%"></div>
       <div class="se-longtext" data-key="long" contenteditable="plaintext-only" spellcheck="false" data-placeholder="点这里写一句话"></div>
     </div>
   </div>
@@ -302,8 +304,6 @@ function applyLook() {
     }
     el.root.classList.toggle('se-dark', dark);
     el.ball.classList.toggle('se-hidden', !settings.ballVisible);
-    // 关掉悬浮球时卡片留在屏幕上（没有球可以点开它了）
-    if (!settings.ballVisible && el.card.classList.contains('se-hidden')) toggleCard(true);
     el.ball.innerHTML = settings.ballIcon ? `<img src="${settings.ballIcon}" alt="">` : ICON.note;
     placeBall();
 }
@@ -476,6 +476,7 @@ function bindUI() {
 function toggleCard(force) {
     const hide = force === undefined ? !el.card.classList.contains('se-hidden') : !force;
     el.card.classList.toggle('se-hidden', hide);
+    if (settings.cardOpen !== !hide) { settings.cardOpen = !hide; save(); }
     if (!hide) {
         if (el.card.dataset.view === 'back') refreshBack();
         render();
@@ -519,6 +520,7 @@ async function onAction(act) {
         case 'lists': return setView('lists');
         case 'lyrics': return currentSong() ? setView('lyrics') : setView('lists');
         case 'front': return setView('front');
+        case 'flip': return flip();
         case 'importmenu': importTarget = null; return setView('import');
         case 'importhere': importTarget = openListId === ALL ? null : openListId; return setView('import');
         case 'importback': return setView(importTarget ? 'list' : 'lists');
@@ -1019,19 +1021,66 @@ async function importZip(zipFile) {
     return { ids, failed };
 }
 
+/** 网易云链接按流行歌的方式加进歌库。不是网易云链接返回 null；加不了抛出带原因的错误。 */
+async function addNeteaseLink(job) {
+    let nid = neteaseSongId(job.url);
+    let info = null;
+    if (!nid && isNeteaseShort(job.url)) {
+        // 短链接解不开跳转，用分享文字里的歌名歌手去搜
+        if (!job.title) throw new Error('网易云短链接解析不了，把分享时的整段文字一起粘进来，或者在浏览器打开后复制完整链接');
+        const r = await searchGD(`${job.title} ${job.artist}`.trim(), 'netease');
+        const hit = r.items.find(m => m.title === job.title) || r.items[0];
+        if (!hit) throw new Error(`在网易云没搜到《${job.title}》`);
+        nid = hit.id;
+        info = { title: hit.title, artist: hit.artist, album: hit.album, picId: hit.picId };
+    }
+    if (!nid) return null;
+    const m = { source: 'netease', id: nid };
+    if (haveGD(m)) return { dup: true };
+    info ||= await neteaseInfo(nid);
+    Object.assign(m, {
+        title: info?.title || job.title || `网易云歌曲 ${nid}`,
+        artist: info?.artist || job.artist || '',
+        album: info?.album || '',
+        picId: info?.picId || '',
+    });
+    return { id: await addGDRecord(m), named: !!(info?.title || job.title) };
+}
+
 async function importFromLinks() {
     const { Popup } = ctx();
-    const text = await Popup.show.input('粘贴链接', '音频文件的直接链接，一行一个。网易云、QQ 音乐的分享链接是网页，用不了。', '', { rows: 6 });
+    const text = await Popup.show.input('粘贴链接', '音频文件的直接链接，一行一个。网易云的歌曲链接，或者 App 里「分享 → 复制链接」的整段文字也可以直接粘。', '', { rows: 6 });
     if (!text) return;
-    const urls = String(text).split(/\s+/).filter(u => /^https?:\/\//i.test(u));
-    if (!urls.length) { toast('warning', '没找到链接'); return; }
+    // 一行一行看：网易云的分享文字长这样「分享某某的单曲《歌名》: https://163cn.tv/xxxx (来自@网易云音乐)」
+    const jobs = [];
+    for (const line of String(text).split(/\n+/)) {
+        const urls = line.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+        const title = line.match(/《(.+?)》/)?.[1]?.trim() || '';
+        const artist = line.match(/分享(.+?)的单曲/)?.[1]?.trim() || '';
+        for (const raw of urls) jobs.push({ url: raw.replace(/[，。,;；)）】]+$/, ''), title, artist });
+    }
+    if (!jobs.length) { toast('warning', '没找到链接'); return; }
     await db.requestPersist();
     const newIds = [];
-    let failed = 0, online = 0;
-    const prog = progressToast(urls.length, '正在处理链接');
-    for (const [i, url] of urls.entries()) {
+    const failures = [];
+    let online = 0, netease = 0, dup = 0, unnamed = 0;
+    const prog = progressToast(jobs.length, '正在处理链接');
+    for (const [i, job] of jobs.entries()) {
+        const { url } = job;
+        prog.set(i);
+        // 网易云：按流行歌的方式在线播放（会员歌也行）
+        try {
+            const r = await addNeteaseLink(job);
+            if (r) {
+                if (r.dup) dup++;
+                else { newIds.push(r.id); netease++; if (!r.named) unnamed++; }
+                continue;
+            }
+        } catch (e) { failures.push(e.message || '网易云暂时连不上'); continue; }
+
         const name = decodeURIComponent((new URL(url).pathname.split('/').pop() || 'link').replace(/\+/g, ' ')) || '链接歌曲';
         let saved = false;
+        let reason = '连不上，或者不是能直接打开的音频文件';
         // 先试试能不能整个下载下来
         try {
             const ctl = new AbortController();
@@ -1039,7 +1088,13 @@ async function importFromLinks() {
             const r = await fetch(url, { signal: ctl.signal });
             clearTimeout(timer);
             const type = r.headers.get('content-type') || '';
-            if (r.ok && !/text\/html|json/i.test(type)) {
+            if (!r.ok) {
+                reason = r.status === 404 || r.status === 410 ? '链接里的文件已经不在了（404）'
+                    : r.status === 401 || r.status === 403 ? `对方不让访问（${r.status}）`
+                    : `对方服务器出错了（${r.status}）`;
+            } else if (/text\/html|json|xml/i.test(type)) {
+                reason = '打开是网页，不是音频文件';
+            } else {
                 const blob = await r.blob();
                 newIds.push(await addSongFile(new File([blob], AUDIO_EXT.test(name) ? name : name + '.mp3', { type: blob.type || type }), { url, local: true }));
                 saved = true;
@@ -1052,13 +1107,17 @@ async function importFromLinks() {
                 library.index.push({ id, title: guess.title || '链接歌曲', artist: guess.artist || '', file: guess.base, hasCover: false, hasLyrics: false, duration: 0, added: Date.now(), url, local: false });
                 newIds.push(id);
                 online++;
-            } else failed++;
+            } else failures.push(reason);
         }
-        prog.set(i + 1);
     }
+    prog.set(jobs.length);
     prog.done();
+    if (netease) toast('info', `${netease} 首网易云的歌按流行歌加进来了，在线播放，没网时放不了` + (unnamed ? `。其中 ${unnamed} 首没取到歌名，可以在歌单里点 ··· 改` : ''));
+    if (dup) toast('info', `${dup} 首网易云的歌歌库里已经有了`);
     if (online) toast('info', `${online} 首只能在线播放，没联网的时候放不了。可以在歌单里点 ··· 改歌名`);
-    if (failed) toast('warning', `${failed} 个链接放不了，需要是能直接打开的音频文件链接`);
+    const byReason = {};
+    failures.forEach(r => { byReason[r] = (byReason[r] || 0) + 1; });
+    for (const [r, n] of Object.entries(byReason)) toast('warning', `${n} 个链接放不了：${r}`);
     await finishImport(newIds, importTarget, 0);
 }
 
@@ -1251,20 +1310,25 @@ async function toggleGDPreview(i) {
     if (b) b.textContent = '❚❚';
 }
 
-async function saveGDTrack(i, btn) {
-    const m = gdState.items[i];
-    if (!m || btn.classList.contains('se-done') || btn.dataset.busy) return;
-    btn.dataset.busy = '1';
-    btn.innerHTML = LOADING;
-    // 只记来源和 ID，不下载音频
+/** 把一首流行歌记进歌库（只记来源和 ID，不下载音频），顺便取封面。返回新 id。 */
+async function addGDRecord(m) {
     const id = uid();
     library.index.push({
-        id, title: m.title, artist: m.artist, album: m.album, file: m.title,
+        id, title: m.title, artist: m.artist || '', album: m.album || '', file: m.title,
         hasCover: false, hasLyrics: false, duration: 0, added: Date.now(),
         gd: { source: m.source, id: m.id }, source: `GD音乐台 · ${GD_NAME[m.source] || m.source}`, local: false,
     });
     const cover = await fetchGDCover(m.source, m.picId);
     if (cover) { await db.putCover(id, cover); songById(id).hasCover = true; }
+    return id;
+}
+
+async function saveGDTrack(i, btn) {
+    const m = gdState.items[i];
+    if (!m || btn.classList.contains('se-done') || btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    btn.innerHTML = LOADING;
+    const id = await addGDRecord(m);
     if (importTarget) library.playlists.find(p => p.id === importTarget)?.songIds.push(id);
     await db.saveIndex(library.index);
     await db.savePlaylists(library.playlists);
@@ -1793,7 +1857,7 @@ function buildSettingsPanel() {
     </div>
     <div class="inline-drawer-content">
       <div class="se-switch-row" id="se_ball_visible" role="switch" tabindex="0"><span>显示悬浮球</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
-      <small>也可以用快速回复按钮：<code>/musicball</code>（藏/显切换），<code>/musicball hide</code>，<code>/musicball show</code>。关掉悬浮球时卡片会留在屏幕上。</small>
+      <small>也可以用快速回复按钮：<code>/musicball</code>（藏/显切换），<code>/musicball hide</code>，<code>/musicball show</code>。关掉悬浮球不会关掉已经打开的卡片，可以只留卡片。</small>
       <hr>
       <div class="flex-container alignitemscenter">
         <span>悬浮球图标</span>
@@ -2005,6 +2069,8 @@ async function init() {
     registerCommand();
     if (settings.songId && songById(settings.songId)) await loadSong(settings.songId, false);
     else render();
+    // 关了悬浮球、只留卡片的用法：刷新后卡片照原样留着（原来关着就不打开）
+    if (!settings.ballVisible && settings.cardOpen) toggleCard(true);
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_CHANGED, () => { if (el.card.dataset.view === 'back') refreshBack(); });

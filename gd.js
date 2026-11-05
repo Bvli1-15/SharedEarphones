@@ -91,3 +91,46 @@ export async function fetchGDCover(source, picId) {
         return b.type.startsWith('image/') ? b : null;
     } catch { return null; }
 }
+
+// ---------- 网易云链接 ----------
+// 网页、手机网页、外链（/song/media/outer/url?id=…）里只要是单曲链接、带 id 的都认
+export function neteaseSongId(url) {
+    let u;
+    try { u = new URL(url); } catch { return ''; }
+    if (!/(^|\.)163\.com$/i.test(u.hostname)) return '';
+    const rest = u.pathname + u.search + u.hash;
+    if (!/song/i.test(rest)) return '';
+    return rest.match(/[?&]id=(\d+)/)?.[1] || '';
+}
+
+// App 里「分享 → 复制链接」给的短链接，浏览器里解不开跳转，只能靠分享文字里的歌名去搜
+export const isNeteaseShort = (url) => /^https?:\/\/163cn\.tv\//i.test(url);
+
+/**
+ * 按网易云 ID 取歌名、歌手、封面 ID。网易云自己的接口不让网页跨域，这里借两个公开的 Meting 接口，一个不行换另一个。
+ * 都拿不到返回 null。
+ */
+export async function neteaseInfo(id) {
+    const tries = [
+        [`https://api.injahow.cn/meting/?type=song&id=${id}`, x => ({ title: x.name, artist: x.artist, pic: x.pic })],
+        [`https://api.i-meto.com/meting/api?server=netease&type=song&id=${id}`, x => ({ title: x.title, artist: x.author, pic: x.pic })],
+    ];
+    for (const [url, pick] of tries) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 10000);
+        try {
+            const r = await fetch(url, { signal: ctl.signal });
+            if (!r.ok) continue;
+            const x = (await r.json())?.[0];
+            if (!x) continue;
+            const v = pick(x);
+            if (!v.title) continue;
+            let picId = '';
+            try { picId = new URL(v.pic).searchParams.get('id') || ''; } catch { /* 没有封面 */ }
+            return { title: String(v.title).trim(), artist: String(v.artist || '').trim(), picId };
+        } catch { /* 换下一个 */ } finally {
+            clearTimeout(timer);
+        }
+    }
+    return null;
+}
