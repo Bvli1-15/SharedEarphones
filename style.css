@@ -283,7 +283,7 @@
 #se-root #se-card textarea.se-longtext {
     position: absolute !important;
     left: 28% !important;
-    top: 59.3% !important;
+    top: 59% !important;
     width: 44% !important;
     height: calc(2 * 1.55em) !important;
     min-height: 0 !important;

@@ -262,8 +262,8 @@ function buildUI() {
       <button class="se-hot se-hot-flip" data-act="flip" aria-label="翻回正面"></button>
       <button class="se-hot se-hot-play" data-act="toggle" aria-label="播放或暂停"></button>
       <svg viewBox="${BACK_VIEWBOX}" aria-label="两个人共用一副耳机">${BACK_SVG}</svg>
-      <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:52.3%"></div>
-      <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:52.3%"></div>
+      <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:51.9%"></div>
+      <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:51.9%"></div>
       <textarea class="se-longtext" data-key="long" rows="2" maxlength="60" spellcheck="false" placeholder="点这里写一句话"></textarea>
     </div>
   </div>
