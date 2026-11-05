@@ -1478,18 +1478,24 @@ async function stHeaders() {
     return f ? f() : { 'Content-Type': 'application/json' };
 }
 
-/** 调共享耳机 API，返回模型回复的文字。 */
-async function subApiChat(messages, maxTokens = 400) {
+/** 调共享耳机 API，返回模型回复的文字。等太久（默认 3 分钟）就放弃，不会一直卡着。 */
+async function subApiChat(messages, maxTokens = 400, waitMs = 180000) {
     let j;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), waitMs);
     try {
         const r = await fetch('/api/backends/chat-completions/generate', {
             method: 'POST',
             headers: await stHeaders(),
             body: JSON.stringify({ ...subApiBody(), model: settings.apiModel.trim(), messages, max_tokens: maxTokens, temperature: 0.7, stream: false }),
+            signal: ctl.signal,
         });
         j = await r.json();
     } catch (e) {
+        if (ctl.signal.aborted) throw new Error(`等了 ${Math.round(waitMs / 60000)} 分钟还没回，可能是中转站太慢`);
         throw new Error('酒馆没能转发请求：' + (e.message || e));
+    } finally {
+        clearTimeout(timer);
     }
     if (j?.error) throw new Error(j.error.message || '共享耳机 API 返回了错误');
     const text = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
@@ -1531,7 +1537,7 @@ async function subApiTags(s) {
     const out = await subApiChat([
         { role: 'system', content: '你是细腻的音乐氛围分析者。按要求写分析，最后用一行 JSON 收尾。' },
         { role: 'user', content: prompt },
-    ], 4000);
+    ], 8000);
     // 有的模型会先吐一段思考过程，去掉；再找最后一个带 tags 的 JSON
     const clean = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
     const all = [...clean.matchAll(/\{[^{}]*\}/g)].filter(m => /"tags"/.test(m[0]));
@@ -1563,17 +1569,36 @@ async function audioForAnalysis(s) {
     const blob = await db.getAudio(s.id);
     if (blob) return blob;
     if (!s.gd && !s.url) return null;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 60000); // 连下载带读完一共最多等 1 分钟
     try {
         const url = s.gd ? await resolveGD(s.gd) : s.url;
         if (!url) return null;
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), 60000);
         const r = await fetch(url, { signal: ctl.signal });
-        clearTimeout(timer);
         if (!r.ok || /text\/html|json/i.test(r.headers.get('content-type') || '')) return null;
+        if (Number(r.headers.get('content-length') || 0) > 25_000_000) return null; // 太大的（无损长曲）不下，手机吃不消
         const b = await r.blob();
         return b.size > 20000 ? b : null;
-    } catch { return null; }
+    } catch { return null; } finally { clearTimeout(timer); }
+}
+
+/** 给一个 Promise 限时：超时就当它失败 */
+function withTimeout(p, ms) {
+    let t;
+    return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error('超时')), ms); })]).finally(() => clearTimeout(t));
+}
+
+/** 打标签时一直挂着的进度提示：正在听哪首、正在写哪首 */
+function statusToast() {
+    if (!window.toastr) return { set() {}, done() {} };
+    let tip = null;
+    return {
+        set(msg) {
+            if (!tip) tip = toastr.info(msg, '共享耳机', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+            else tip.find('.toast-message').text(msg);
+        },
+        done() { if (tip) toastr.clear(tip); tip = null; },
+    };
 }
 
 /** 给歌打标签。force 为真时连已经有标签的也重做（你手动改过的不动）。 */
@@ -1583,23 +1608,29 @@ async function tagSongs(ids, force = false) {
     let done = 0, failReason = '', needApi = false;
     const useModel = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
     const useApi = useModel && subApiUsable();
+    const todo = ids.map(songById).filter(s => s && s.tagBy !== 'user' && (!s.mood || force));
+    const tip = useApi ? statusToast() : { set() {}, done() {} };
+    const nth = (i) => (todo.length > 1 ? `（${i + 1}/${todo.length}）` : '');
+    const doneTitles = [];
     try {
-        for (const id of ids) {
-            const s = songById(id);
-            if (!s || s.tagBy === 'user' || (s.mood && !force)) continue;
+        for (const [i, s] of todo.entries()) {
+            const id = s.id;
             // 1. 本地「听」一遍，零 token（背面音符的速度、给 char 的 BPM、给共享耳机 API 的声音特征都靠它）
             if (!s.analysis || s.analysis.v !== ANALYSIS_VERSION) {
-                const blob = await audioForAnalysis(s);
-                if (blob) {
-                    try { s.analysis = await analyzeAudio(blob); } catch (e) { console.warn(TAG, '音频分析失败', s.title, e); }
-                }
+                tip.set(`正在听《${s.title}》${nth(i)}…`);
+                try {
+                    const blob = await audioForAnalysis(s);
+                    if (blob) s.analysis = await withTimeout(analyzeAudio(blob), 60000);
+                } catch (e) { console.warn(TAG, '音频分析失败（跳过，只靠歌名歌词）', s.title, e); }
             }
             // 2. 规则换算 或 共享耳机 API
             let r = null;
             if (useModel) {
                 if (!useApi || failReason) { needApi = true; await db.saveIndex(library.index); continue; }
+                tip.set(`正在写《${s.title}》的氛围分析${nth(i)}…一首大概要半分钟到两分钟`);
                 try {
                     r = await subApiTags(s);
+                    doneTitles.push(s.title);
                     s.tagBy = 'subapi';
                     s.notes = r.notes;
                     if (!r.notes) s.notesOn = false;
@@ -1617,8 +1648,12 @@ async function tagSongs(ids, force = false) {
         }
     } finally {
         tagging = false;
+        tip.done();
     }
     if (el.card.dataset.view === 'list') renderSongList();
+    if (doneTitles.length) toast('success', doneTitles.length === 1
+        ? `《${doneTitles[0]}》的氛围分析写好了，在歌单里点铅笔 → 改歌名 能看到`
+        : `${doneTitles.length} 首歌的氛围分析写好了`);
     if (needApi) {
         if (failReason) noApiPopup(`共享耳机 API 没能打标签：${esc(failReason)}`);
         else if (!settings.apiOn && subApiReady()) noApiPopup('共享耳机 API 现在是关着的。');
