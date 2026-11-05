@@ -32,13 +32,18 @@ const DEFAULTS = Object.freeze({
     autoCover: true,        // 导入时自动补封面
     listen: true,           // 让 char 听见（只在播放时）
     listenMode: 'lines',    // vibe 只给氛围 / lines 氛围+正在唱的几句 / full 氛围+整首歌词
-    tagMode: 'model',       // rules 规则换算（零 token）/ model 模型判断（每首一次）
+    tagMode: 'model',       // rules 规则换算（零 token）/ model 共享耳机 API 判断（每首一次）
     autoSwitch: true,       // char 根据剧情换歌
     switchCooldown: 3,      // 换过之后隔几轮才能再换
-    apiUrl: '',             // 副 API（可选，只用来打标签）：OpenAI 兼容接口地址
+    apiOn: false,           // 共享耳机 API 开关（只给这个插件打标签用）
+    apiUrl: '',             // OpenAI 兼容接口地址
     apiKey: '',
     apiModel: '',
+    tagPrompt: '',          // 打标签的分析提示词；空着就用默认的
 });
+
+// 共享耳机 API 默认的分析提示词（十个维度）
+const DEFAULT_TAG_PROMPT = '请分析我提供的这首音乐（音频/链接/描述），重点详细描述它的整体氛围，而不是只给出“欢快/悲伤/紧张”等简单标签。请从以下维度展开：1）情绪基调与色彩：音乐传达的主要情绪是什么，是单一情绪还是多种情绪交织，是否有明暗、冷暖、轻重、苦甜的变化；2）能量与动态：整体能量高低、强弱起伏、紧张与松弛的转换、是否具有推进感或悬浮感；3）空间感与质感：声音是开阔还是封闭、近还是远、干燥还是湿润、粗糙还是细腻、温暖还是冷冽，是否有回声、混响、噪点、空气感；4）节奏与律动：节拍是否稳定、速度快慢、律动是机械、摇摆、流动还是破碎，是否让人想舞动、行走、静坐或屏息；5）音色与配器：主要乐器/人声的音色特征，哪些声音突出，哪些声音铺底，音色组合带来怎样的氛围；6）和声与旋律：和谐/不和谐、明亮/幽暗、旋律线条是歌唱性、循环性、碎片化还是吟诵式；7）结构与氛围变化：开头、发展、高潮、结尾的氛围如何变化，是否有突然转折、渐进累积或留白；8）联想意象与场景：这段音乐让你联想到什么画面、时间、地点、天气、空间或叙事场景；9）身体与心理反应：听后身体是放松、紧绷、漂浮、下沉还是被推动，心理上更接近孤独、亲密、怀旧、神秘、庄严、梦幻还是不安；10）综合总结：用一段具象、细腻、有画面感的语言概括其氛围，并指出最关键的2—3个氛围关键词。请避免空泛套话，尽量结合具体声音细节说明理由；如果某些维度不明显，可以说明“不明显/较弱”，不要强行编造。';
 const INJECT_KEY = 'shared_earphones';
 
 const AUDIO_EXT = /\.(mp3|m4a|aac|flac|wav|wave|ogg|oga|opus|webm|mp4|m4v|mov|aif|aiff|caf|alac|wma)$/i;
@@ -83,7 +88,10 @@ const el = {};              // 常用元素
 // ======================================================
 function loadSettings() {
     const store = ctx().extensionSettings;
-    store[MODULE] = Object.assign(structuredClone(DEFAULTS), store[MODULE] || {});
+    const old = store[MODULE];
+    store[MODULE] = Object.assign(structuredClone(DEFAULTS), old || {});
+    // 以前填过副 API 的，升级后开关默认打开，照旧能用
+    if (old && old.apiOn === undefined) store[MODULE].apiOn = !!(old.apiUrl && old.apiModel);
     settings = store[MODULE];
 }
 const save = () => ctx().saveSettingsDebounced();
@@ -163,7 +171,7 @@ const ICON = {
     pause: '<svg width="26" height="32" viewBox="0 0 24 30"><rect x="3" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/><rect x="15" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/></svg>',
     lyr: '<svg width="28" height="28" viewBox="0 0 24 24"><path d="M4 5h16a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0120 17h-9l-5 4v-4H4a1.5 1.5 0 01-1.5-1.5v-9A1.5 1.5 0 014 5z" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 9.5h2.5v2.2c0 1.2-.7 2-1.8 2.3M13.5 9.5H16v2.2c0 1.2-.7 2-1.8 2.3" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.6" stroke-linecap="round"/></svg>',
     edit: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/></svg>',
-    more: '<svg width="24" height="24" viewBox="0 0 24 24"><circle class="se-more-ring" cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle class="se-more-dot" cx="7.7" cy="12" r="1.45" fill="currentColor"/><circle class="se-more-dot" cx="12" cy="12" r="1.45" fill="currentColor"/><circle class="se-more-dot" cx="16.3" cy="12" r="1.45" fill="currentColor"/></svg>',
+    more: '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M4 20h4.2L19.4 8.8a2 2 0 000-2.8l-1.4-1.4a2 2 0 00-2.8 0L4 15.8V20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.5 6.5l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     search: '<svg width="20" height="20" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8"/><path d="M15 15l5 5" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 const LOADING = '<span class="se-dots" aria-label="加载中"><i></i><i></i><i></i></span>';
@@ -783,10 +791,10 @@ function renderSongList() {
         return `<div class="se-song" data-song="${esc(id)}">
   <div class="se-row${now}">
     <div class="se-row-main"><div>${esc(s.title)}</div><div class="se-row-sub">${esc(tags.join(' · '))}</div></div>
-    <button class="se-more" data-more aria-label="更多操作" aria-expanded="false">${ICON.more}</button>
+    <button class="se-more" data-more aria-label="编辑这首歌" aria-expanded="false">${ICON.more}</button>
   </div>
   <div class="se-row-acts" hidden>
-    <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button><button data-op="del" class="se-danger">${delText}</button>
+    <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button>${s.notes ? `<button data-op="notes" class="se-notes-sw${s.notesOn ? ' se-on' : ''}" role="switch" aria-checked="${!!s.notesOn}">分析给 char 看</button>` : ''}<button data-op="del" class="se-danger">${delText}</button>
   </div>
 </div>`;
     }).join('');
@@ -808,11 +816,26 @@ function renderSongList() {
             e.stopPropagation();
             const op = btn.dataset.op;
             if (op === 'edit') editSongInfo(id);
+            else if (op === 'notes') toggleNotes(id, btn);
             else if (op === 'cover') changeCover(id);
             else if (op === 'lyrics') openLyricSearch(id, 'list');
             else if (op === 'del') removeSong(id);
         }));
     });
+}
+
+/** 歌单里每首歌的开关：这首歌的氛围分析要不要一起给 char 看 */
+async function toggleNotes(id, btn) {
+    const s = songById(id);
+    if (!s?.notes) return;
+    s.notesOn = !s.notesOn;
+    btn.classList.toggle('se-on', s.notesOn);
+    btn.setAttribute('aria-checked', String(s.notesOn));
+    await db.saveIndex(library.index);
+    if (id === settings.songId) updateInjection();
+    toast('info', s.notesOn
+        ? `《${s.title}》的氛围分析会一起给 char 看，放这首时每轮多几百到上千 token`
+        : `《${s.title}》只给 char 看标签，不给分析`);
 }
 
 async function editSongInfo(id) {
@@ -824,11 +847,14 @@ async function editSongInfo(id) {
   <label>歌名<input class="text_pole" data-f="title"></label>
   <label>歌手<input class="text_pole" data-f="artist"></label>
   <label>氛围标签（用逗号隔开）<input class="text_pole" data-f="tags"></label>
-  <label>情绪（char 换歌时按这个挑）<select class="text_pole" data-f="mood"><option value="">不设</option>${MOOD_WORDS.map(w => `<option>${w}</option>`).join('')}</select></label></div>`;
+  <label>情绪（char 换歌时按这个挑）<select class="text_pole" data-f="mood"><option value="">不设</option>${MOOD_WORDS.map(w => `<option>${w}</option>`).join('')}</select></label>
+  <label>氛围分析（共享耳机 API 写的，可以改；要不要给 char 看在歌单里开关）<textarea class="text_pole" data-f="notes" rows="8" placeholder="还没有分析。打开共享耳机 API 后重新生成标签，或者自己写一段"></textarea></label></div>`;
     $('[data-f="title"]', box).value = s.title;
     $('[data-f="artist"]', box).value = s.artist || '';
     $('[data-f="tags"]', box).value = (s.tags || []).join('，');
     $('[data-f="mood"]', box).value = s.mood || '';
+    $('[data-f="notes"]', box).value = s.notes || '';
+    $('[data-f="notes"]', box).addEventListener('keydown', e => e.stopPropagation());
     const ok = await new Popup(box, POPUP_TYPE.CONFIRM, '', { okButton: '保存', cancelButton: '取消' }).show();
     if (!ok) return;
     const title = $('[data-f="title"]', box).value.trim();
@@ -839,7 +865,10 @@ async function editSongInfo(id) {
     const tags = $('[data-f="tags"]', box).value.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean).slice(0, 6);
     const mood = $('[data-f="mood"]', box).value;
     if (tags.join() !== (s.tags || []).join() || mood !== (s.mood || '')) { s.tags = tags; s.mood = mood; s.tagBy = 'user'; }
+    const notes = $('[data-f="notes"]', box).value.trim();
+    if (notes !== (s.notes || '')) { s.notes = notes; if (!notes) s.notesOn = false; }
     await db.saveIndex(library.index);
+    if (id === settings.songId) updateInjection();
     render();
     renderSongList();
     if ((!s.hasLyrics && settings.autoLyrics) || (!s.hasCover && settings.autoCover)) enrich([id], true);
@@ -1128,9 +1157,9 @@ async function importFromLinks() {
     }
     prog.set(jobs.length);
     prog.done();
-    if (netease) toast('info', `${netease} 首网易云的歌按流行歌加进来了，在线播放，没网时放不了` + (unnamed ? `。其中 ${unnamed} 首没取到歌名，可以在歌单里点 ··· 改` : ''));
+    if (netease) toast('info', `${netease} 首网易云的歌按流行歌加进来了，在线播放，没网时放不了` + (unnamed ? `。其中 ${unnamed} 首没取到歌名，可以在歌单里点铅笔改` : ''));
     if (dup) toast('info', `${dup} 首网易云的歌歌库里已经有了`);
-    if (online) toast('info', `${online} 首只能在线播放，没联网的时候放不了。可以在歌单里点 ··· 改歌名`);
+    if (online) toast('info', `${online} 首只能在线播放，没联网的时候放不了。可以在歌单里点铅笔改歌名`);
     const byReason = {};
     failures.forEach(r => { byReason[r] = (byReason[r] || 0) + 1; });
     for (const [r, n] of Object.entries(byReason)) toast('warning', `${n} 个链接放不了：${r}`);
@@ -1429,46 +1458,17 @@ async function enrich(ids, quiet = false) {
 }
 
 // ======================================================
-// 氛围标签：本地分析（零 token）+ 规则换算或模型判断
+// 氛围标签：本地分析（零 token）+ 规则换算或共享耳机 API
 // ======================================================
-async function modelTags(s) {
-    const generateRaw = await stFn('generateRaw');
-    if (!generateRaw) throw new Error('这个版本的酒馆拿不到 generateRaw');
-    let excerpt = '';
-    if (s.hasLyrics) {
-        const raw = (await db.getLyrics(s.id)) || '';
-        excerpt = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 8).join('\n');
-    }
-    const prompt = [
-        '给这首歌标注氛围，之后会在角色扮演里当背景音乐参考。',
-        `歌名：${s.title}`,
-        s.artist ? `歌手：${s.artist}` : '',
-        s.instrumental ? '这是一首纯音乐。' : '',
-        s.analysis ? `声音特征（本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
-        excerpt ? `歌词开头几行：\n${excerpt}` : '',
-        `只输出一行 JSON，不要别的内容：{"tags":["3到5个中文氛围词"],"mood":"从 ${MOOD_WORDS.join('/')} 里选一个"}`,
-    ].filter(Boolean).join('\n');
-    const systemPrompt = '你是音乐氛围标注助手，只输出 JSON。';
-    // 酒馆 1.13.2 起 generateRaw 改成对象传参（形参个数为 0）；之前是 (prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength)
-    const out = generateRaw.length === 0
-        ? await generateRaw({ prompt, systemPrompt, responseLength: 120 })
-        : await generateRaw(prompt, null, false, false, systemPrompt, 120);
-    const m = String(out || '').match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('模型没有按格式回答');
-    const j = JSON.parse(m[0]);
-    const tags = (Array.isArray(j.tags) ? j.tags : []).map(x => String(x).trim()).filter(Boolean).slice(0, 5);
-    const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
-    if (!tags.length && !mood) throw new Error('模型没给出标签');
-    return { tags, mood };
-}
-
-// ---------- 副 API：只用来打标签。走酒馆服务器转发（自定义 OpenAI 兼容接口），不受浏览器跨域限制 ----------
+// ---------- 共享耳机 API：只给这个插件用，只用来打标签。走酒馆服务器转发（自定义 OpenAI 兼容接口），不受浏览器跨域限制 ----------
 const subApiReady = () => !!(settings.apiUrl?.trim() && settings.apiModel?.trim());
+const subApiUsable = () => !!settings.apiOn && subApiReady();
+const tagPrompt = () => settings.tagPrompt?.trim() || DEFAULT_TAG_PROMPT;
 
 function subApiBody() {
     const url = settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
     const key = settings.apiKey?.trim();
-    // 酒馆转发时请求头里的 Authorization 默认用它自己存的 key，这里用 custom_include_headers 换成副 API 的 key
+    // 酒馆转发时请求头里的 Authorization 默认用它自己存的 key，这里用 custom_include_headers 换成共享耳机 API 的 key
     return { chat_completion_source: 'custom', custom_url: url, custom_include_headers: key ? `Authorization: ${JSON.stringify('Bearer ' + key)}` : '' };
 }
 
@@ -1477,7 +1477,7 @@ async function stHeaders() {
     return f ? f() : { 'Content-Type': 'application/json' };
 }
 
-/** 调副 API，返回模型回复的文字。 */
+/** 调共享耳机 API，返回模型回复的文字。 */
 async function subApiChat(messages, maxTokens = 400) {
     let j;
     try {
@@ -1490,82 +1490,101 @@ async function subApiChat(messages, maxTokens = 400) {
     } catch (e) {
         throw new Error('酒馆没能转发请求：' + (e.message || e));
     }
-    if (j?.error) throw new Error(j.error.message || '副 API 返回了错误');
+    if (j?.error) throw new Error(j.error.message || '共享耳机 API 返回了错误');
     const text = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
-    if (!String(text).trim()) throw new Error('副 API 没有返回内容');
+    if (!String(text).trim()) throw new Error('共享耳机 API 没有返回内容');
     return String(text);
 }
 
-/** 用副 API 打标签：提示词要求写得具体（情境、画面、情绪层次），歌词也多给一些。 */
+/**
+ * 用共享耳机 API 打标签：先按分析提示词写一段氛围分析，最后一行给 JSON 标签。
+ * 分析存进 s.notes，要不要给 char 看由歌单里每首歌的开关决定。
+ */
 async function subApiTags(s) {
-    let excerpt = '';
+    let lyrics = '';
     if (s.hasLyrics) {
         const raw = (await db.getLyrics(s.id)) || '';
-        excerpt = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 16).join('\n');
+        lyrics = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 40).join('\n');
     }
     const info = [
-        '给这首歌写「氛围标签」，之后会在角色扮演里当背景音乐的氛围参考。',
+        '【这首歌的信息】',
         `歌名：${s.title}`,
         s.artist ? `歌手：${s.artist}` : '',
         s.album ? `专辑：${s.album}` : '',
         s.instrumental ? '这是一首纯音乐。' : '',
-        s.analysis ? `声音特征（本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
-        excerpt ? `歌词（节选）：\n${excerpt}` : '',
+        s.analysis ? `声音特征（浏览器本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
+        lyrics ? `歌词：\n${lyrics}` : '',
+        '说明：你听不到音频，只有上面这些信息。你认识这首歌（或这部作品）的话，可以结合你知道的内容；不认识的维度就照实说不明显，不要编。',
     ].filter(Boolean).join('\n');
-    const prompt = info + '\n\n' + [
-        '要求：',
-        '- 写 4 到 6 个中文标签，每个 2 到 8 个字。',
-        '- 要具体，能让人想象出画面和情境：写情绪的细分层次、适合的场景（时间、天气、地点）、画面或动作意象，比如「深夜独自回家」「雨后潮湿的街」「克制的想念」「旧照片泛黄」。不要只写「安静」「悲伤」「好听」这种笼统的词。',
-        '- 依据歌名、歌词和声音特征来写；你认识这首歌的话可以结合你知道的内容，不认识就别编造歌里没有的故事。',
-        `- mood 从 ${MOOD_WORDS.join('/')} 里选一个最贴近的。`,
-        '只输出一行 JSON，不要别的内容：{"tags":["标签1","标签2"],"mood":"情绪词"}',
+    const tail = [
+        '【输出格式】',
+        '先按上面的要求写完分析。分析写完后，另起一行，只用一行 JSON 收尾，JSON 后面不要再写任何东西：',
+        `{"tags":["4到6个中文氛围标签"],"mood":"从 ${MOOD_WORDS.join('/')} 里选一个"}`,
+        '标签每个 2 到 8 个字，要具体、有画面，比如「深夜独自回家」「雨后潮湿的街」「克制的想念」，不要只写「安静」「悲伤」这种笼统的词。',
     ].join('\n');
+    const prompt = `${info}\n\n【分析要求】\n${tagPrompt()}\n\n${tail}`;
     const out = await subApiChat([
-        { role: 'system', content: '你是音乐氛围标注助手，只输出 JSON。' },
+        { role: 'system', content: '你是细腻的音乐氛围分析者。按要求写分析，最后用一行 JSON 收尾。' },
         { role: 'user', content: prompt },
-    ], 400);
-    // 有的模型会先吐一段思考过程，去掉之后找带 tags 的那个 JSON
+    ], 4000);
+    // 有的模型会先吐一段思考过程，去掉；再找最后一个带 tags 的 JSON
     const clean = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    const obj = (clean.match(/\{[^{}]*\}/g) || []).reverse().find(x => /"tags"/.test(x));
-    if (!obj) throw new Error('副 API 没有按格式回答');
-    const j = JSON.parse(obj);
+    const all = [...clean.matchAll(/\{[^{}]*\}/g)].filter(m => /"tags"/.test(m[0]));
+    const hit = all[all.length - 1];
+    if (!hit) throw new Error('共享耳机 API 没有按格式回答（可能分析太长被截断了）');
+    const j = JSON.parse(hit[0]);
     const tags = (Array.isArray(j.tags) ? j.tags : []).map(x => String(x).trim()).filter(Boolean).slice(0, 6);
     const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
-    if (!tags.length && !mood) throw new Error('副 API 没给出标签');
-    return { tags, mood };
+    if (!tags.length && !mood) throw new Error('共享耳机 API 没给出标签');
+    // JSON 前面的就是分析；去掉收尾的代码块记号
+    const notes = clean.slice(0, hit.index).replace(/```(?:json)?\s*$/i, '').trim();
+    return { tags, mood, notes };
+}
+
+/** 没开共享耳机 API 时弹窗告诉一声，可以手动加标签 */
+async function noApiPopup(reason = '') {
+    const { Popup } = ctx();
+    const body = `${reason ? reason + '<br><br>' : ''}这几首歌先没打标签。可以在歌单里点歌名右边的铅笔 → 改歌名，手动填氛围标签和情绪；也可以去扩展设置「让 char 听见」里添加并打开共享耳机 API。`;
+    if (Popup?.show?.text) await Popup.show.text('没有添加共享耳机 API', body);
+    else toast('warning', '没有添加共享耳机 API，可以在歌单里点铅笔手动添加标签');
 }
 
 /** 给歌打标签。force 为真时连已经有标签的也重做（你手动改过的不动）。 */
 async function tagSongs(ids, force = false) {
     if (tagging) { setTimeout(() => tagSongs(ids, force), 2000); return; }
     tagging = true;
-    let done = 0, modelFailed = false, failReason = '';
+    let done = 0, failReason = '', needApi = false;
     const useModel = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
-    const useSub = useModel && subApiReady();   // 填了副 API 就用副 API，没填照旧借主 API
+    const useApi = useModel && subApiUsable();
     try {
         for (const id of ids) {
             const s = songById(id);
             if (!s || s.tagBy === 'user' || (s.mood && !force)) continue;
-            // 1. 本地分析，零 token
+            // 1. 本地分析，零 token（背面音符的速度、给 char 的 BPM 都靠它）
             if (!s.analysis) {
                 const blob = await db.getAudio(id);
                 if (blob) {
                     try { s.analysis = await analyzeAudio(blob); } catch (e) { console.warn(TAG, '音频分析失败', s.title, e); }
                 }
             }
-            // 2. 规则换算 或 模型判断
+            // 2. 规则换算 或 共享耳机 API
             let r = null;
-            if (useModel && !modelFailed) {
+            if (useModel) {
+                if (!useApi || failReason) { needApi = true; await db.saveIndex(library.index); continue; }
                 try {
-                    if (useSub) { r = await subApiTags(s); s.tagBy = 'subapi'; }
-                    else { r = await modelTags(s); s.tagBy = 'model'; }
+                    r = await subApiTags(s);
+                    s.tagBy = 'subapi';
+                    s.notes = r.notes;
+                    if (!r.notes) s.notesOn = false;
                 } catch (e) {
-                    console.warn(TAG, '模型打标签失败，改用规则', e);
-                    modelFailed = true;
-                    failReason = e?.message || '';
+                    console.warn(TAG, '共享耳机 API 打标签失败', e);
+                    failReason = e?.message || '没连上';
+                    needApi = true;
                 }
+            } else if (s.analysis) {
+                r = tagsByRules(s.analysis);
+                s.tagBy = 'rules';
             }
-            if (!r && s.analysis) { r = tagsByRules(s.analysis); s.tagBy = 'rules'; }
             if (r) { s.tags = r.tags; s.mood = r.mood; done++; }
             await db.saveIndex(library.index);
         }
@@ -1573,9 +1592,11 @@ async function tagSongs(ids, force = false) {
         tagging = false;
     }
     if (el.card.dataset.view === 'list') renderSongList();
-    if (modelFailed) toast('warning', useSub
-        ? `副 API 没能打标签${failReason ? `（${failReason}）` : ''}，这次先用规则换算了`
-        : '模型没能打标签（可能还没连上 API），这次先用规则换算了');
+    if (needApi) {
+        if (failReason) noApiPopup(`共享耳机 API 没能打标签：${esc(failReason)}`);
+        else if (!settings.apiOn && subApiReady()) noApiPopup('共享耳机 API 现在是关着的。');
+        else noApiPopup();
+    }
     return done;
 }
 
@@ -1611,6 +1632,8 @@ function buildInjection() {
     if (s.instrumental) vibe.push('纯音乐');
     if (s.analysis?.bpm) vibe.push(`约 ${Math.round(s.analysis.bpm)} BPM`);
     if (vibe.length) out.push(`氛围：${[...new Set(vibe)].join('、')}`);
+    // 这首歌在歌单里打开了「分析给 char 看」，就把氛围分析一起给
+    if (s.notesOn && s.notes) out.push(`氛围分析：\n${s.notes.slice(0, 3000)}`);
     if (settings.listenMode === 'lines') {
         const seg = lyricWindow();
         if (seg) out.push(`此刻唱到：\n${seg}`);
@@ -1981,10 +2004,10 @@ function buildSettingsPanel() {
       <label for="se_tag_mode">氛围标签怎么来</label>
       <select id="se_tag_mode" class="text_pole">
         <option value="rules">规则换算（零 token，只看快慢明暗）</option>
-        <option value="model">模型判断（每首歌导入时花一次，更准）</option>
+        <option value="model">共享耳机 API 判断（每首歌导入时花一次，会写一段氛围分析）</option>
       </select>
       <div class="se-subapi">
-        <b>副 API（可选，只用来打标签）</b>
+        <div class="se-switch-row" id="se_api_on" role="switch" tabindex="0"><b>共享耳机 API（只给这个插件打标签用）</b><i class="se-switch fa-solid fa-toggle-off"></i></div>
         <input id="se_api_url" class="text_pole" type="url" autocomplete="off" spellcheck="false" placeholder="接口地址，比如 https://api.deepseek.com/v1">
         <input id="se_api_key" class="text_pole" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key">
         <div class="flex-container alignitemscenter">
@@ -1993,13 +2016,16 @@ function buildSettingsPanel() {
           <div class="menu_button" id="se_api_fetch">获取模型</div>
           <div class="menu_button" id="se_api_test">测试</div>
         </div>
-        <small>填了副 API，「模型判断」就改用它，标签会写得更具体（情境、画面、情绪的细分层次），每首歌还是只花一次。不填就和原来一样，借酒馆当前连着的 API。支持 OpenAI 兼容的接口，请求由酒馆服务器转发；Key 存在酒馆的设置文件里。</small>
+        <label for="se_api_prompt">分析提示词</label>
+        <textarea id="se_api_prompt" class="text_pole" rows="6" spellcheck="false"></textarea>
+        <div class="flex-container alignitemscenter"><div class="menu_button" id="se_api_prompt_reset">恢复默认提示词</div></div>
+        <small>选「共享耳机 API 判断」并打开开关后，每首歌导入时让它按提示词写一段氛围分析，再从里面提炼标签和情绪，每首只花一次。歌名、歌词、本地测的速度明暗，还有最后输出标签的格式，插件会自动加上，提示词里不用写。分析存在每首歌里，在歌单点铅笔 → 改歌名可以看和改；点铅笔后的「分析给 char 看」决定这首歌放的时候要不要把分析也给 char。<br>开关关着、或者没填好时，不会借酒馆的主 API，会弹窗提醒你手动添加标签。也可以用快速回复按钮 <code>/musicapi</code>（开关切换）、<code>/musicapi on</code>、<code>/musicapi off</code>。<br>支持 OpenAI 兼容的接口，请求由酒馆服务器转发；Key 存在酒馆的设置文件里。</small>
       </div>
       <div class="menu_button" id="se_tag_all">给没有标签的歌生成标签</div>
       <div class="menu_button" id="se_tag_redo">重新生成全部标签（手动改过的不动）</div>
       <div class="se-switch-row" id="se_switch" role="switch" tabindex="0"><span>char 根据剧情换歌</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <div class="flex-container alignitemscenter"><span>换过之后隔</span><input type="number" id="se_cooldown" class="text_pole" min="1" max="20" style="width:4em"><span>轮才能再换</span></div>
-      <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点 ··· → 改歌名 里手动改。</small>
+      <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点铅笔 → 改歌名 里手动改。</small>
       <hr>
       <label for="se_tint">玻璃明暗</label>
       <select id="se_tint" class="text_pole"><option value="auto">跟随酒馆主题</option><option value="light">偏亮</option><option value="dark">偏暗</option></select>
@@ -2038,7 +2064,13 @@ function buildSettingsPanel() {
     const tm = $('#se_tag_mode');
     tm.value = settings.tagMode;
     tm.addEventListener('change', () => { settings.tagMode = tm.value; save(); });
-    // 副 API
+    // 共享耳机 API
+    paintApiSwitch = bindSwitch('#se_api_on', () => settings.apiOn, v => setApiOn(v, false));
+    const ap = $('#se_api_prompt');
+    ap.value = tagPrompt();
+    ap.addEventListener('input', () => { const v = ap.value.trim(); settings.tagPrompt = v === DEFAULT_TAG_PROMPT ? '' : v; save(); });
+    ap.addEventListener('keydown', e => e.stopPropagation());
+    $('#se_api_prompt_reset').addEventListener('click', () => { settings.tagPrompt = ''; ap.value = DEFAULT_TAG_PROMPT; save(); toast('info', '提示词恢复成默认的了'); });
     for (const [sel, key] of [['#se_api_url', 'apiUrl'], ['#se_api_key', 'apiKey'], ['#se_api_model', 'apiModel']]) {
         const n = $(sel);
         n.value = settings[key] || '';
@@ -2060,15 +2092,16 @@ function buildSettingsPanel() {
         if (!subApiReady()) { toast('warning', '接口地址和模型名都要填'); return; }
         try {
             const out = await subApiChat([{ role: 'user', content: '只回复两个字：收到' }], 20);
-            toast('success', `副 API 连上了，它回复：${out.trim().slice(0, 20)}`);
-        } catch (e) { toast('error', `副 API 连不上：${e.message}`); }
+            toast('success', `共享耳机 API 连上了，它回复：${out.trim().slice(0, 20)}${settings.apiOn ? '' : '。记得把开关打开'}`);
+        } catch (e) { toast('error', `共享耳机 API 连不上：${e.message}`); }
     });
     $('#se_tag_redo').addEventListener('click', async () => {
         const ids = library.index.filter(s => s.tagBy !== 'user').map(s => s.id);
         if (!ids.length) { toast('info', '没有可以重新生成的歌'); return; }
         const { Popup } = ctx();
-        const ok = await Popup.show.confirm('重新生成全部标签', `给 ${ids.length} 首歌重新打标签，用${settings.tagMode === 'model' ? (subApiReady() ? '副 API' : '主 API') : '规则换算'}。你手动改过的不动。`);
+        const ok = await Popup.show.confirm('重新生成全部标签', `给 ${ids.length} 首歌重新打标签，用${settings.tagMode === 'model' ? '共享耳机 API（会重写氛围分析）' : '规则换算'}。你手动改过的不动。`);
         if (!ok) return;
+        if (settings.tagMode === 'model' && !subApiUsable()) { noApiPopup(settings.apiOn ? '' : '共享耳机 API 现在是关着的。'); return; }
         toast('info', `开始重新生成 ${ids.length} 首歌的标签，在后台慢慢来`);
         const n = await tagSongs(ids, true);
         if (n != null) toast('success', `重新生成了 ${n} 首歌的标签`);
@@ -2076,6 +2109,7 @@ function buildSettingsPanel() {
     $('#se_tag_all').addEventListener('click', async () => {
         const ids = library.index.filter(s => !s.mood && s.tagBy !== 'user').map(s => s.id);
         if (!ids.length) { toast('info', '每首歌都有标签了'); return; }
+        if (settings.tagMode === 'model' && (settings.listen || settings.autoSwitch) && !subApiUsable()) { noApiPopup(settings.apiOn ? '' : '共享耳机 API 现在是关着的。'); return; }
         toast('info', `开始给 ${ids.length} 首歌生成标签，在后台慢慢来`);
         const n = await tagSongs(ids);
         if (n != null) toast('success', `生成了 ${n} 首歌的标签`); // 正在打别的标签时会排队，不报数
@@ -2177,6 +2211,15 @@ function shrinkImage(file, size, as = 'dataurl') {
 // ======================================================
 // 斜杠命令：/musicball
 // ======================================================
+let paintApiSwitch = () => {};
+function setApiOn(v, fromCommand = true) {
+    settings.apiOn = !!v;
+    save();
+    paintApiSwitch();
+    if (settings.apiOn && !subApiReady()) toast('warning', '共享耳机 API 打开了，但接口地址和模型名还没填全');
+    else if (fromCommand) toast('info', `共享耳机 API ${settings.apiOn ? '打开了' : '关上了'}`);
+}
+
 function registerCommand() {
     const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx();
     if (!SlashCommandParser?.addCommandObject) return;
@@ -2198,6 +2241,25 @@ function registerCommand() {
             }),
         ],
         helpString: '显示或隐藏共享耳机的悬浮球。<code>/musicball</code> 切换，<code>/musicball hide</code> 隐藏，<code>/musicball show</code> 显示。',
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'musicapi',
+        callback: (_named, value) => {
+            const v = String(value ?? '').trim().toLowerCase();
+            if (v === 'on') setApiOn(true);
+            else if (v === 'off') setApiOn(false);
+            else setApiOn(!settings.apiOn);
+            return '';
+        },
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'on 打开 / off 关上 / 不填就切换',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                enumList: ['on', 'off', 'toggle'],
+            }),
+        ],
+        helpString: '打开或关上共享耳机 API（只给共享耳机打标签用）。<code>/musicapi</code> 切换，<code>/musicapi on</code> 打开，<code>/musicapi off</code> 关上。',
     }));
 }
 
