@@ -35,6 +35,9 @@ const DEFAULTS = Object.freeze({
     tagMode: 'model',       // rules 规则换算（零 token）/ model 模型判断（每首一次）
     autoSwitch: true,       // char 根据剧情换歌
     switchCooldown: 3,      // 换过之后隔几轮才能再换
+    apiUrl: '',             // 副 API（可选，只用来打标签）：OpenAI 兼容接口地址
+    apiKey: '',
+    apiModel: '',
 });
 const INJECT_KEY = 'shared_earphones';
 
@@ -160,6 +163,7 @@ const ICON = {
     pause: '<svg width="26" height="32" viewBox="0 0 24 30"><rect x="3" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/><rect x="15" y="2" width="6" height="26" rx="1.5" fill="var(--se-icon)"/></svg>',
     lyr: '<svg width="28" height="28" viewBox="0 0 24 24"><path d="M4 5h16a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0120 17h-9l-5 4v-4H4a1.5 1.5 0 01-1.5-1.5v-9A1.5 1.5 0 014 5z" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 9.5h2.5v2.2c0 1.2-.7 2-1.8 2.3M13.5 9.5H16v2.2c0 1.2-.7 2-1.8 2.3" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.6" stroke-linecap="round"/></svg>',
     edit: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    more: '<svg width="24" height="24" viewBox="0 0 24 24"><circle class="se-more-ring" cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle class="se-more-dot" cx="7.7" cy="12" r="1.45" fill="currentColor"/><circle class="se-more-dot" cx="12" cy="12" r="1.45" fill="currentColor"/><circle class="se-more-dot" cx="16.3" cy="12" r="1.45" fill="currentColor"/></svg>',
     search: '<svg width="20" height="20" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="var(--se-icon-sub)" stroke-width="1.8"/><path d="M15 15l5 5" stroke="var(--se-icon-sub)" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 const LOADING = '<span class="se-dots" aria-label="加载中"><i></i><i></i><i></i></span>';
@@ -779,7 +783,7 @@ function renderSongList() {
         return `<div class="se-song" data-song="${esc(id)}">
   <div class="se-row${now}">
     <div class="se-row-main"><div>${esc(s.title)}</div><div class="se-row-sub">${esc(tags.join(' · '))}</div></div>
-    <button class="se-more" data-more aria-label="更多操作">···</button>
+    <button class="se-more" data-more aria-label="更多操作" aria-expanded="false">${ICON.more}</button>
   </div>
   <div class="se-row-acts" hidden>
     <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button><button data-op="del" class="se-danger">${delText}</button>
@@ -794,7 +798,11 @@ function renderSongList() {
             const acts = $('.se-row-acts', box);
             const open = acts.hidden;
             $$('.se-row-acts', el.songRows).forEach(x => { x.hidden = true; });
+            $$('[data-more]', el.songRows).forEach(b => { b.classList.remove('se-on'); b.setAttribute('aria-expanded', 'false'); });
             acts.hidden = !open;
+            const btn = e.currentTarget;
+            btn.classList.toggle('se-on', open);
+            btn.setAttribute('aria-expanded', String(open));
         });
         $$('[data-op]', box).forEach(btn => btn.addEventListener('click', e => {
             e.stopPropagation();
@@ -1454,12 +1462,86 @@ async function modelTags(s) {
     return { tags, mood };
 }
 
+// ---------- 副 API：只用来打标签。走酒馆服务器转发（自定义 OpenAI 兼容接口），不受浏览器跨域限制 ----------
+const subApiReady = () => !!(settings.apiUrl?.trim() && settings.apiModel?.trim());
+
+function subApiBody() {
+    const url = settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
+    const key = settings.apiKey?.trim();
+    // 酒馆转发时请求头里的 Authorization 默认用它自己存的 key，这里用 custom_include_headers 换成副 API 的 key
+    return { chat_completion_source: 'custom', custom_url: url, custom_include_headers: key ? `Authorization: ${JSON.stringify('Bearer ' + key)}` : '' };
+}
+
+async function stHeaders() {
+    const f = await stFn('getRequestHeaders');
+    return f ? f() : { 'Content-Type': 'application/json' };
+}
+
+/** 调副 API，返回模型回复的文字。 */
+async function subApiChat(messages, maxTokens = 400) {
+    let j;
+    try {
+        const r = await fetch('/api/backends/chat-completions/generate', {
+            method: 'POST',
+            headers: await stHeaders(),
+            body: JSON.stringify({ ...subApiBody(), model: settings.apiModel.trim(), messages, max_tokens: maxTokens, temperature: 0.7, stream: false }),
+        });
+        j = await r.json();
+    } catch (e) {
+        throw new Error('酒馆没能转发请求：' + (e.message || e));
+    }
+    if (j?.error) throw new Error(j.error.message || '副 API 返回了错误');
+    const text = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
+    if (!String(text).trim()) throw new Error('副 API 没有返回内容');
+    return String(text);
+}
+
+/** 用副 API 打标签：提示词要求写得具体（情境、画面、情绪层次），歌词也多给一些。 */
+async function subApiTags(s) {
+    let excerpt = '';
+    if (s.hasLyrics) {
+        const raw = (await db.getLyrics(s.id)) || '';
+        excerpt = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 16).join('\n');
+    }
+    const info = [
+        '给这首歌写「氛围标签」，之后会在角色扮演里当背景音乐的氛围参考。',
+        `歌名：${s.title}`,
+        s.artist ? `歌手：${s.artist}` : '',
+        s.album ? `专辑：${s.album}` : '',
+        s.instrumental ? '这是一首纯音乐。' : '',
+        s.analysis ? `声音特征（本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
+        excerpt ? `歌词（节选）：\n${excerpt}` : '',
+    ].filter(Boolean).join('\n');
+    const prompt = info + '\n\n' + [
+        '要求：',
+        '- 写 4 到 6 个中文标签，每个 2 到 8 个字。',
+        '- 要具体，能让人想象出画面和情境：写情绪的细分层次、适合的场景（时间、天气、地点）、画面或动作意象，比如「深夜独自回家」「雨后潮湿的街」「克制的想念」「旧照片泛黄」。不要只写「安静」「悲伤」「好听」这种笼统的词。',
+        '- 依据歌名、歌词和声音特征来写；你认识这首歌的话可以结合你知道的内容，不认识就别编造歌里没有的故事。',
+        `- mood 从 ${MOOD_WORDS.join('/')} 里选一个最贴近的。`,
+        '只输出一行 JSON，不要别的内容：{"tags":["标签1","标签2"],"mood":"情绪词"}',
+    ].join('\n');
+    const out = await subApiChat([
+        { role: 'system', content: '你是音乐氛围标注助手，只输出 JSON。' },
+        { role: 'user', content: prompt },
+    ], 400);
+    // 有的模型会先吐一段思考过程，去掉之后找带 tags 的那个 JSON
+    const clean = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    const obj = (clean.match(/\{[^{}]*\}/g) || []).reverse().find(x => /"tags"/.test(x));
+    if (!obj) throw new Error('副 API 没有按格式回答');
+    const j = JSON.parse(obj);
+    const tags = (Array.isArray(j.tags) ? j.tags : []).map(x => String(x).trim()).filter(Boolean).slice(0, 6);
+    const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
+    if (!tags.length && !mood) throw new Error('副 API 没给出标签');
+    return { tags, mood };
+}
+
 /** 给歌打标签。force 为真时连已经有标签的也重做（你手动改过的不动）。 */
 async function tagSongs(ids, force = false) {
     if (tagging) { setTimeout(() => tagSongs(ids, force), 2000); return; }
     tagging = true;
-    let done = 0, modelFailed = false;
+    let done = 0, modelFailed = false, failReason = '';
     const useModel = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
+    const useSub = useModel && subApiReady();   // 填了副 API 就用副 API，没填照旧借主 API
     try {
         for (const id of ids) {
             const s = songById(id);
@@ -1474,9 +1556,13 @@ async function tagSongs(ids, force = false) {
             // 2. 规则换算 或 模型判断
             let r = null;
             if (useModel && !modelFailed) {
-                try { r = await modelTags(s); s.tagBy = 'model'; } catch (e) {
+                try {
+                    if (useSub) { r = await subApiTags(s); s.tagBy = 'subapi'; }
+                    else { r = await modelTags(s); s.tagBy = 'model'; }
+                } catch (e) {
                     console.warn(TAG, '模型打标签失败，改用规则', e);
                     modelFailed = true;
+                    failReason = e?.message || '';
                 }
             }
             if (!r && s.analysis) { r = tagsByRules(s.analysis); s.tagBy = 'rules'; }
@@ -1487,7 +1573,9 @@ async function tagSongs(ids, force = false) {
         tagging = false;
     }
     if (el.card.dataset.view === 'list') renderSongList();
-    if (modelFailed) toast('warning', '模型没能打标签（可能还没连上 API），这次先用规则换算了');
+    if (modelFailed) toast('warning', useSub
+        ? `副 API 没能打标签${failReason ? `（${failReason}）` : ''}，这次先用规则换算了`
+        : '模型没能打标签（可能还没连上 API），这次先用规则换算了');
     return done;
 }
 
@@ -1895,7 +1983,20 @@ function buildSettingsPanel() {
         <option value="rules">规则换算（零 token，只看快慢明暗）</option>
         <option value="model">模型判断（每首歌导入时花一次，更准）</option>
       </select>
+      <div class="se-subapi">
+        <b>副 API（可选，只用来打标签）</b>
+        <input id="se_api_url" class="text_pole" type="url" autocomplete="off" spellcheck="false" placeholder="接口地址，比如 https://api.deepseek.com/v1">
+        <input id="se_api_key" class="text_pole" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key">
+        <div class="flex-container alignitemscenter">
+          <input id="se_api_model" class="text_pole flex1" list="se_api_models" autocomplete="off" spellcheck="false" placeholder="模型名">
+          <datalist id="se_api_models"></datalist>
+          <div class="menu_button" id="se_api_fetch">获取模型</div>
+          <div class="menu_button" id="se_api_test">测试</div>
+        </div>
+        <small>填了副 API，「模型判断」就改用它，标签会写得更具体（情境、画面、情绪的细分层次），每首歌还是只花一次。不填就和原来一样，借酒馆当前连着的 API。支持 OpenAI 兼容的接口，请求由酒馆服务器转发；Key 存在酒馆的设置文件里。</small>
+      </div>
       <div class="menu_button" id="se_tag_all">给没有标签的歌生成标签</div>
+      <div class="menu_button" id="se_tag_redo">重新生成全部标签（手动改过的不动）</div>
       <div class="se-switch-row" id="se_switch" role="switch" tabindex="0"><span>char 根据剧情换歌</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <div class="flex-container alignitemscenter"><span>换过之后隔</span><input type="number" id="se_cooldown" class="text_pole" min="1" max="20" style="width:4em"><span>轮才能再换</span></div>
       <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点 ··· → 改歌名 里手动改。</small>
@@ -1937,6 +2038,41 @@ function buildSettingsPanel() {
     const tm = $('#se_tag_mode');
     tm.value = settings.tagMode;
     tm.addEventListener('change', () => { settings.tagMode = tm.value; save(); });
+    // 副 API
+    for (const [sel, key] of [['#se_api_url', 'apiUrl'], ['#se_api_key', 'apiKey'], ['#se_api_model', 'apiModel']]) {
+        const n = $(sel);
+        n.value = settings[key] || '';
+        n.addEventListener('input', () => { settings[key] = n.value.trim(); save(); });
+        n.addEventListener('keydown', e => e.stopPropagation());
+    }
+    $('#se_api_fetch').addEventListener('click', async () => {
+        if (!settings.apiUrl) { toast('warning', '先填接口地址'); return; }
+        try {
+            const r = await fetch('/api/backends/chat-completions/status', { method: 'POST', headers: await stHeaders(), body: JSON.stringify(subApiBody()) });
+            const j = await r.json();
+            const ids = (Array.isArray(j?.data) ? j.data : []).map(x => x?.id).filter(Boolean);
+            if (j?.error || !ids.length) throw new Error('没拿到模型列表，检查一下地址和 Key');
+            $('#se_api_models').innerHTML = ids.map(id => `<option value="${esc(id)}"></option>`).join('');
+            toast('success', `拿到 ${ids.length} 个模型，点模型名那一栏就能选`);
+        } catch (e) { toast('error', e.message || '没拿到模型列表'); }
+    });
+    $('#se_api_test').addEventListener('click', async () => {
+        if (!subApiReady()) { toast('warning', '接口地址和模型名都要填'); return; }
+        try {
+            const out = await subApiChat([{ role: 'user', content: '只回复两个字：收到' }], 20);
+            toast('success', `副 API 连上了，它回复：${out.trim().slice(0, 20)}`);
+        } catch (e) { toast('error', `副 API 连不上：${e.message}`); }
+    });
+    $('#se_tag_redo').addEventListener('click', async () => {
+        const ids = library.index.filter(s => s.tagBy !== 'user').map(s => s.id);
+        if (!ids.length) { toast('info', '没有可以重新生成的歌'); return; }
+        const { Popup } = ctx();
+        const ok = await Popup.show.confirm('重新生成全部标签', `给 ${ids.length} 首歌重新打标签，用${settings.tagMode === 'model' ? (subApiReady() ? '副 API' : '主 API') : '规则换算'}。你手动改过的不动。`);
+        if (!ok) return;
+        toast('info', `开始重新生成 ${ids.length} 首歌的标签，在后台慢慢来`);
+        const n = await tagSongs(ids, true);
+        if (n != null) toast('success', `重新生成了 ${n} 首歌的标签`);
+    });
     $('#se_tag_all').addEventListener('click', async () => {
         const ids = library.index.filter(s => !s.mood && s.tagBy !== 'user').map(s => s.id);
         if (!ids.length) { toast('info', '每首歌都有标签了'); return; }

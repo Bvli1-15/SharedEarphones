@@ -210,7 +210,13 @@
 #se-card .se-row.se-playing-row .se-row-main > div:first-child::before { content: "♪ "; }
 #se-card .se-check { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--se-icon-sub); display: flex !important; align-items: center; justify-content: center; font-size: 12px; flex: none; }
 #se-card .se-check.se-on { background: var(--se-solid); border-color: var(--se-solid); color: var(--se-solid-ink); }
-#se-card .se-more { width: 32px; height: 28px; display: flex !important; align-items: center; justify-content: center; color: var(--se-sub); font-size: 18px; letter-spacing: 1px; flex: none; }
+/* 每首歌右边的「⋯」：圆圈里三个点，一看就能点；展开时圆圈填满 */
+#se-card .se-more { width: 36px; height: 36px; display: flex !important; align-items: center; justify-content: center; color: var(--se-icon-sub); flex: none; border-radius: 50%; }
+#se-card .se-more svg { display: block; transition: transform .15s; }
+#se-card .se-more:active svg { transform: scale(.9); }
+#se-card .se-more.se-on { color: var(--se-ink); }
+#se-card .se-more.se-on .se-more-ring { fill: var(--se-ink); stroke: var(--se-ink); }
+#se-card .se-more.se-on .se-more-dot { fill: var(--se-solid-ink); }
 #se-card .se-new { color: var(--se-sub); cursor: pointer; }
 #se-card .se-actions { display: flex; gap: 8px; margin-top: 12px; }
 #se-card .se-actions button, #se-card .se-empty button { flex: 1; text-align: center; font-size: 14px; padding: 10px 14px; border-radius: 12px; background: var(--se-chip); color: var(--se-ink); }
@@ -327,6 +333,8 @@
 .se-settings .se-switch { flex: none; font-size: 1.35em; opacity: .55; transition: color .15s, opacity .15s; }
 .se-settings .se-switch-row.se-on .se-switch { color: var(--SmartThemeQuoteColor); opacity: 1; }
 .se-settings .se-switch-head { padding-top: 2px; }
+.se-settings .se-subapi { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 8px 0; border-top: 1px dashed var(--SmartThemeBorderColor); border-bottom: 1px dashed var(--SmartThemeBorderColor); }
+.se-settings .se-subapi input { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
     #se-card { transition: none; }
