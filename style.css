@@ -341,6 +341,14 @@
 .se-settings .se-subapi { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 8px 0; border-top: 1px dashed var(--SmartThemeBorderColor); border-bottom: 1px dashed var(--SmartThemeBorderColor); }
 .se-settings .se-subapi input, .se-settings .se-subapi textarea { margin: 0; }
 .se-settings .se-subapi textarea { resize: vertical; font-size: .92em; line-height: 1.5; }
+/* 设置里的按钮：新版酒馆在安卓上会把按钮挤成一个字宽，字竖着排。这里强制按文字宽度横排 */
+.se-settings .menu_button {
+    width: fit-content !important; min-width: fit-content !important; max-width: 100%;
+    flex: 0 0 auto !important; white-space: nowrap !important; writing-mode: horizontal-tb !important;
+    word-break: keep-all; padding-left: 12px; padding-right: 12px;
+}
+.se-settings .flex-container { flex-wrap: wrap; gap: 6px; }
+.se-settings .se-btn-row #se_api_model { flex: 1 1 140px; min-width: 0; width: auto; }
 
 @media (prefers-reduced-motion: reduce) {
     #se-card { transition: none; }
