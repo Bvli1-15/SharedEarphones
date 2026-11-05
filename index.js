@@ -9,7 +9,7 @@ import { listZip, extractZip } from './zip.js';
 import { findLyrics, findCover, searchLyrics } from './online.js';
 import { searchFree, fetchThumb, MOODS } from './free.js';
 import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME, neteaseSongId, isNeteaseShort, neteaseInfo } from './gd.js';
-import { analyzeAudio, tagsByRules, describeAnalysis, MOOD_WORDS } from './analyze.js';
+import { analyzeAudio, tagsByRules, describeAnalysis, MOOD_WORDS, ANALYSIS_VERSION } from './analyze.js';
 import * as db from './db.js';
 
 const MODULE = 'shared_earphones';
@@ -39,6 +39,7 @@ const DEFAULTS = Object.freeze({
     apiUrl: '',             // OpenAI 兼容接口地址
     apiKey: '',
     apiModel: '',
+    apiModels: [],          // 「获取模型」拉到的列表，下次打开还在
     tagPrompt: '',          // 打标签的分析提示词；空着就用默认的
 });
 
@@ -1504,7 +1505,7 @@ async function subApiTags(s) {
     let lyrics = '';
     if (s.hasLyrics) {
         const raw = (await db.getLyrics(s.id)) || '';
-        lyrics = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).slice(0, 40).join('\n');
+        lyrics = parseLyrics(raw).lines.map(l => l.text).filter(Boolean).join('\n').slice(0, 3000);
     }
     const info = [
         '【这首歌的信息】',
@@ -1512,12 +1513,16 @@ async function subApiTags(s) {
         s.artist ? `歌手：${s.artist}` : '',
         s.album ? `专辑：${s.album}` : '',
         s.instrumental ? '这是一首纯音乐。' : '',
-        s.analysis ? `声音特征（浏览器本地测的，可能不准）：${describeAnalysis(s.analysis)}` : '',
+        s.duration ? `时长：${fmt(s.duration)}` : '',
+        s.analysis
+            ? `声音特征（插件在浏览器里把整首歌过了一遍测出来的，相当于你的耳朵；粗略，但比瞎猜可靠）：\n- ${describeAnalysis(s.analysis).split('；').join('\n- ')}`
+            : '（这首没能在本地测声音特征）',
         lyrics ? `歌词：\n${lyrics}` : '',
-        '说明：你听不到音频，只有上面这些信息。你认识这首歌（或这部作品）的话，可以结合你知道的内容；不认识的维度就照实说不明显，不要编。',
+        '说明：你听不到音频本身。空间感、节奏、能量走向、调性这些听觉维度，优先依据上面测出来的声音特征来写；你认识这首歌（或这部作品）的话，可以结合你知道的编曲和演唱；两边都没有依据的维度就照实说不明显，不要编。',
     ].filter(Boolean).join('\n');
     const tail = [
         '【输出格式】',
+        '直接从第一个维度开始写，不要开场白、不要复述任务、不要客套话。不要用 Markdown 符号（不要 **、#、- 这些），每个维度用「1）情绪基调与色彩：」这样的格式开头，维度之间空一行。',
         '先按上面的要求写完分析。分析写完后，另起一行，只用一行 JSON 收尾，JSON 后面不要再写任何东西：',
         `{"tags":["4到6个中文氛围标签"],"mood":"从 ${MOOD_WORDS.join('/')} 里选一个"}`,
         '标签每个 2 到 8 个字，要具体、有画面，比如「深夜独自回家」「雨后潮湿的街」「克制的想念」，不要只写「安静」「悲伤」这种笼统的词。',
@@ -1537,7 +1542,8 @@ async function subApiTags(s) {
     const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
     if (!tags.length && !mood) throw new Error('共享耳机 API 没给出标签');
     // JSON 前面的就是分析；去掉收尾的代码块记号
-    const notes = clean.slice(0, hit.index).replace(/```(?:json)?\s*$/i, '').trim();
+    const notes = clean.slice(0, hit.index).replace(/```(?:json)?\s*$/i, '')
+        .replace(/\*\*/g, '').replace(/^#{1,6}\s*/gm, '').trim();
     return { tags, mood, notes };
 }
 
@@ -1547,6 +1553,27 @@ async function noApiPopup(reason = '') {
     const body = `${reason ? reason + '<br><br>' : ''}这几首歌先没打标签。可以在歌单里点歌名右边的铅笔 → 改歌名，手动填氛围标签和情绪；也可以去扩展设置「让 char 听见」里添加并打开共享耳机 API。`;
     if (Popup?.show?.text) await Popup.show.text('没有添加共享耳机 API', body);
     else toast('warning', '没有添加共享耳机 API，可以在歌单里点铅笔手动添加标签');
+}
+
+/**
+ * 拿一份音频给本地分析用。存在浏览器里的直接用；在线的歌（流行歌、只能在线放的链接）试着临时下载一份，
+ * 只用来分析，不存。对方不让网页读取、或者没网，就算了。
+ */
+async function audioForAnalysis(s) {
+    const blob = await db.getAudio(s.id);
+    if (blob) return blob;
+    if (!s.gd && !s.url) return null;
+    try {
+        const url = s.gd ? await resolveGD(s.gd) : s.url;
+        if (!url) return null;
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 60000);
+        const r = await fetch(url, { signal: ctl.signal });
+        clearTimeout(timer);
+        if (!r.ok || /text\/html|json/i.test(r.headers.get('content-type') || '')) return null;
+        const b = await r.blob();
+        return b.size > 20000 ? b : null;
+    } catch { return null; }
 }
 
 /** 给歌打标签。force 为真时连已经有标签的也重做（你手动改过的不动）。 */
@@ -1560,9 +1587,9 @@ async function tagSongs(ids, force = false) {
         for (const id of ids) {
             const s = songById(id);
             if (!s || s.tagBy === 'user' || (s.mood && !force)) continue;
-            // 1. 本地分析，零 token（背面音符的速度、给 char 的 BPM 都靠它）
-            if (!s.analysis) {
-                const blob = await db.getAudio(id);
+            // 1. 本地「听」一遍，零 token（背面音符的速度、给 char 的 BPM、给共享耳机 API 的声音特征都靠它）
+            if (!s.analysis || s.analysis.v !== ANALYSIS_VERSION) {
+                const blob = await audioForAnalysis(s);
                 if (blob) {
                     try { s.analysis = await analyzeAudio(blob); } catch (e) { console.warn(TAG, '音频分析失败', s.title, e); }
                 }
@@ -2010,15 +2037,15 @@ function buildSettingsPanel() {
         <div class="se-switch-row" id="se_api_on" role="switch" tabindex="0"><b>共享耳机 API（只给这个插件打标签用）</b><i class="se-switch fa-solid fa-toggle-off"></i></div>
         <input id="se_api_url" class="text_pole" type="url" autocomplete="off" spellcheck="false" placeholder="接口地址，比如 https://api.deepseek.com/v1">
         <input id="se_api_key" class="text_pole" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key">
-        <div class="flex-container alignitemscenter">
-          <input id="se_api_model" class="text_pole flex1" list="se_api_models" autocomplete="off" spellcheck="false" placeholder="模型名">
-          <datalist id="se_api_models"></datalist>
+        <div class="flex-container alignitemscenter se-btn-row">
+          <input id="se_api_model" class="text_pole" autocomplete="off" spellcheck="false" placeholder="模型名（可以手打）">
           <div class="menu_button" id="se_api_fetch">获取模型</div>
           <div class="menu_button" id="se_api_test">测试</div>
         </div>
+        <select id="se_api_model_pick" class="text_pole" hidden></select>
         <label for="se_api_prompt">分析提示词</label>
         <textarea id="se_api_prompt" class="text_pole" rows="6" spellcheck="false"></textarea>
-        <div class="flex-container alignitemscenter"><div class="menu_button" id="se_api_prompt_reset">恢复默认提示词</div></div>
+        <div class="flex-container alignitemscenter se-btn-row"><div class="menu_button" id="se_api_prompt_reset">恢复默认提示词</div></div>
         <small>选「共享耳机 API 判断」并打开开关后，每首歌导入时让它按提示词写一段氛围分析，再从里面提炼标签和情绪，每首只花一次。歌名、歌词、本地测的速度明暗，还有最后输出标签的格式，插件会自动加上，提示词里不用写。分析存在每首歌里，在歌单点铅笔 → 改歌名可以看和改；点铅笔后的「分析给 char 看」决定这首歌放的时候要不要把分析也给 char。<br>开关关着、或者没填好时，不会借酒馆的主 API，会弹窗提醒你手动添加标签。也可以用快速回复按钮 <code>/musicapi</code>（开关切换）、<code>/musicapi on</code>、<code>/musicapi off</code>。<br>支持 OpenAI 兼容的接口，请求由酒馆服务器转发；Key 存在酒馆的设置文件里。</small>
       </div>
       <div class="menu_button" id="se_tag_all">给没有标签的歌生成标签</div>
@@ -2077,15 +2104,36 @@ function buildSettingsPanel() {
         n.addEventListener('input', () => { settings[key] = n.value.trim(); save(); });
         n.addEventListener('keydown', e => e.stopPropagation());
     }
+    // 模型下拉框：拉到列表后显示，选一个就填进模型名
+    const pick = $('#se_api_model_pick');
+    const fillModels = (ids) => {
+        if (!ids?.length) { pick.hidden = true; return; }
+        const cur = settings.apiModel || '';
+        pick.innerHTML = `<option value="">${cur && ids.includes(cur) ? '换一个模型' : '从列表里选一个模型'}（共 ${ids.length} 个）</option>`
+            + ids.map(id => `<option value="${esc(id)}"${id === cur ? ' selected' : ''}>${esc(id)}</option>`).join('');
+        pick.hidden = false;
+    };
+    fillModels(settings.apiModels);
+    pick.addEventListener('change', () => {
+        if (!pick.value) return;
+        settings.apiModel = pick.value;
+        $('#se_api_model').value = pick.value;
+        save();
+        toast('success', `模型换成了 ${pick.value}`);
+    });
     $('#se_api_fetch').addEventListener('click', async () => {
         if (!settings.apiUrl) { toast('warning', '先填接口地址'); return; }
         try {
             const r = await fetch('/api/backends/chat-completions/status', { method: 'POST', headers: await stHeaders(), body: JSON.stringify(subApiBody()) });
-            const j = await r.json();
-            const ids = (Array.isArray(j?.data) ? j.data : []).map(x => x?.id).filter(Boolean);
-            if (j?.error || !ids.length) throw new Error('没拿到模型列表，检查一下地址和 Key');
-            $('#se_api_models').innerHTML = ids.map(id => `<option value="${esc(id)}"></option>`).join('');
-            toast('success', `拿到 ${ids.length} 个模型，点模型名那一栏就能选`);
+            const j = await r.json().catch(() => null);
+            // 各家中转返回的样子不一样：{data:[...]}、{models:[...]}、直接一个数组，元素可能是对象也可能是字符串
+            const list = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.models) ? j.models : [];
+            const ids = [...new Set(list.map(x => (typeof x === 'string' ? x : x?.id || x?.name || '')).filter(Boolean))].sort();
+            if (!ids.length) throw new Error(j?.error?.message || (j?.error ? '接口拒绝了，检查一下地址和 Key' : '没拿到模型列表，检查一下地址和 Key；也可以直接手打模型名'));
+            settings.apiModels = ids;
+            save();
+            fillModels(ids);
+            toast('success', `拿到 ${ids.length} 个模型，在下面的下拉框里选`);
         } catch (e) { toast('error', e.message || '没拿到模型列表'); }
     });
     $('#se_api_test').addEventListener('click', async () => {
