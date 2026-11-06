@@ -243,9 +243,8 @@ function buildUI() {
       <button class="se-opt" data-act="impsearch"><b>在线找歌</b><small>搜开放授权的免费音乐，适合给剧情配氛围。曲库是英文的，有现成的中文情绪词可以点</small></button>
       <button class="se-opt" data-act="impfiles"><b>选文件</b><small>可以多选。mp3、m4a、flac、wav、ogg 都行；视频只取声音；同时选上 .lrc 会自动配到同名的歌</small></button>
       <button class="se-opt" data-act="impzip"><b>压缩包</b><small>把整个文件夹打成 zip 一次导入，里面同名的 .lrc 也会配上</small></button>
-      <button class="se-opt" data-act="implinks"><b>粘贴链接</b><small>音频文件的直链，一行一个。能下载的存进浏览器，下载不了的就在线播放。网易云的歌曲链接或分享文字也能直接粘</small></button>
+      <button class="se-opt" data-act="implinks"><b>粘贴链接</b></button>
     </div>
-    <div class="se-tip">电脑上也可以直接把文件拖到这张卡片上。</div>
   </div>
 
   <div class="se-face se-lrcsearch">
@@ -260,7 +259,7 @@ function buildUI() {
     <div class="se-searchbar"><input class="se-mq" type="search" enterkeyhint="search" placeholder="英文关键词，比如 piano"><button class="se-primary" data-act="musicgo">搜索</button></div>
     <div class="se-chips">${MOODS.map(([zh, en]) => `<button data-mood="${en}">${zh}</button>`).join('')}</div>
     <div class="se-rows se-music-rows"></div>
-    <div class="se-tip">开放授权音乐，来自 Openverse（大多是 Jamendo 上的独立音乐人）</div>
+    <div class="se-tip">开放授权音乐，来自 Openverse</div>
   </div>
 
   <div class="se-face se-gdsearch">
@@ -268,7 +267,7 @@ function buildUI() {
     <div class="se-searchbar"><input class="se-gq" type="search" enterkeyhint="search" placeholder="歌名 歌手，比如 十年 陈奕迅"><button class="se-primary" data-act="gdgo">搜索</button></div>
     <div class="se-chips">${GD_SOURCES.map(([k, zh]) => `<button data-gdsrc="${k}"${k === 'netease' ? ' class="se-on"' : ''}>${zh}</button>`).join('')}</div>
     <div class="se-rows se-gd-rows"></div>
-    <div class="se-tip">来自 GD音乐台（music.gdstudio.xyz），只在线播放，每次放的时候现取链接。对方限制 5 分钟 50 次请求</div>
+    <div class="se-tip">来自 GD音乐台</div>
   </div>
 
   <div class="se-face se-back">
@@ -2097,7 +2096,6 @@ function buildSettingsPanel() {
     </div>
     <div class="inline-drawer-content">
       <div class="se-switch-row" id="se_ball_visible" role="switch" tabindex="0"><span>显示悬浮球</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
-      <small>也可以用快速回复按钮：<code>/musicball</code>（藏/显切换），<code>/musicball hide</code>，<code>/musicball show</code>。关掉悬浮球不会关掉已经打开的卡片，可以只留卡片。</small>
       <hr>
       <div class="flex-container alignitemscenter">
         <span>悬浮球图标</span>
@@ -2106,6 +2104,8 @@ function buildSettingsPanel() {
       </div>
       <label for="se_material">质感</label>
       <select id="se_material" class="text_pole"><option value="frost">磨砂</option><option value="liquid">液态玻璃</option></select>
+      <label for="se_tint">玻璃明暗</label>
+      <select id="se_tint" class="text_pole"><option value="auto">跟随酒馆主题</option><option value="light">偏亮</option><option value="dark">偏暗</option></select>
       <div class="se-switch-row" id="se_auto_lyrics" role="switch" tabindex="0"><span>导入时自动找歌词（LRCLIB）</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <div class="se-switch-row" id="se_auto_cover" role="switch" tabindex="0"><span>导入时自动补封面</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <small>这两项需要联网，找到的东西会存进浏览器，以后离线也能看。</small>
@@ -2144,9 +2144,6 @@ function buildSettingsPanel() {
       <div class="se-switch-row" id="se_switch" role="switch" tabindex="0"><span>char 根据剧情换歌</span><i class="se-switch fa-solid fa-toggle-off"></i></div>
       <div class="flex-container alignitemscenter"><span>换过之后隔</span><input type="number" id="se_cooldown" class="text_pole" min="1" max="20" style="width:4em"><span>轮才能再换</span></div>
       <small>剧情的情绪和正在放的歌明显对不上时，char 会悄悄换一首情绪合适的歌，正文里不会提。标签可以在歌单里点铅笔 → 改歌名 里手动改。</small>
-      <hr>
-      <label for="se_tint">玻璃明暗</label>
-      <select id="se_tint" class="text_pole"><option value="auto">跟随酒馆主题</option><option value="light">偏亮</option><option value="dark">偏暗</option></select>
       <hr>
       <div class="flex-container alignitemscenter">
         <span>备份歌库</span>
