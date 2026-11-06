@@ -815,7 +815,7 @@ function renderSongList() {
     <button class="se-more" data-more aria-label="编辑这首歌" aria-expanded="false">${ICON.more}</button>
   </div>
   <div class="se-row-acts" hidden>
-    <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button><button data-op="tag">分析标签</button>${s.notes ? `<button data-op="notes" class="se-notes-sw${s.notesOn ? ' se-on' : ''}" role="switch" aria-checked="${!!s.notesOn}">分析给 char 看</button>` : ''}<button data-op="del" class="se-danger">${delText}</button>
+    <button data-op="edit">改歌名</button><button data-op="cover">换封面</button><button data-op="lyrics">找歌词</button><button data-op="tag">生成标签</button>${s.notes ? `<button data-op="notes" class="se-notes-sw${s.notesOn ? ' se-on' : ''}" role="switch" aria-checked="${!!s.notesOn}">分析给 char 看</button>` : ''}<button data-op="del" class="se-danger">${delText}</button>
   </div>
 </div>`;
     }).join('');
@@ -850,7 +850,7 @@ function renderSongList() {
 async function analyzeOne(id) {
     const s = songById(id);
     if (!s) return;
-    const viaApi = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
+    const viaApi = settings.tagMode === 'model';
     if (viaApi && !subApiUsable()) { noApiPopup(settings.apiOn ? '' : '共享耳机 API 现在是关着的。'); return; }
     if (s.tagBy === 'user') {
         const ok = await ctx().Popup.show.confirm('重新分析这首歌', `《${s.title}》的标签你手动改过，重新分析会把标签、情绪${viaApi ? '和氛围分析' : ''}都换成新的。确定吗？`);
@@ -858,11 +858,11 @@ async function analyzeOne(id) {
         delete s.tagBy;
     }
     if (tagging) toast('info', `前面还有歌在分析，《${s.title}》排在后面`);
-    else if (!viaApi) toast('info', `正在给《${s.title}》分析标签…`);
+    else if (!viaApi) toast('info', `正在用规则换算给《${s.title}》生成标签…设置里「氛围标签怎么来」选的是规则换算，只出标签，不写氛围分析`);
     const n = await tagSongs([id], true);
     // 走共享耳机 API 的，写好、出错都会自己提示；规则换算这里补一句结果
     if (!viaApi && n != null) {
-        if (n) toast('success', `《${s.title}》的标签换好了：${[s.mood, ...(s.tags || [])].filter(Boolean).join('、')}`);
+        if (n) toast('success', `《${s.title}》的标签换好了（规则换算）：${[s.mood, ...(s.tags || [])].filter(Boolean).join('、')}`);
         else toast('warning', `《${s.title}》没能听到声音（可能对方不让网页读取），规则换算给不出标签，可以手动填`);
     }
 }
@@ -1665,7 +1665,7 @@ async function tagSongs(ids, force = false) {
     if (tagging) { setTimeout(() => tagSongs(ids, force), 2000); return; }
     tagging = true;
     let done = 0, failReason = '', needApi = false;
-    const useModel = settings.tagMode === 'model' && (settings.listen || settings.autoSwitch);
+    const useModel = settings.tagMode === 'model';
     const useApi = useModel && subApiUsable();
     const todo = ids.map(songById).filter(s => s && s.tagBy !== 'user' && (!s.mood || force));
     const tip = useApi ? statusToast() : { set() {}, done() {} };
@@ -2267,7 +2267,7 @@ function buildSettingsPanel() {
     $('#se_tag_all').addEventListener('click', async () => {
         const ids = library.index.filter(s => !s.mood && s.tagBy !== 'user').map(s => s.id);
         if (!ids.length) { toast('info', '每首歌都有标签了'); return; }
-        if (settings.tagMode === 'model' && (settings.listen || settings.autoSwitch) && !subApiUsable()) { noApiPopup(settings.apiOn ? '' : '共享耳机 API 现在是关着的。'); return; }
+        if (settings.tagMode === 'model' && !subApiUsable()) { noApiPopup(settings.apiOn ? '' : '共享耳机 API 现在是关着的。'); return; }
         toast('info', `开始给 ${ids.length} 首歌生成标签，在后台慢慢来`);
         const n = await tagSongs(ids);
         if (n != null) toast('success', `生成了 ${n} 首歌的标签`); // 正在打别的标签时会排队，不报数
