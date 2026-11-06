@@ -308,6 +308,9 @@
 #se-card .se-hot-play { left: 64%; top: 95.4%; width: 44px; height: 44px; border-radius: 50%; transform: translate(-50%, -50%); }
 #se-card .se-stage { position: relative; container-type: inline-size; }
 #se-card .se-stage svg { display: block; width: 100%; height: auto; overflow: visible; }
+/* 耳机图和音符各占一层：耳机图画好就不动了，每帧只重画上面那层音符 */
+#se-card .se-stage svg { transform: translateZ(0); }
+#se-card .se-stage svg.se-notes-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; will-change: transform; }
 #se-card .se-label {
     position: absolute;
     transform: translate(-50%, -50%);

@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "律",
-    "version": "0.4.8",
+    "version": "0.4.9",
     "homePage": "https://github.com/Bvli1-15/SharedEarphones",
     "auto_update": false,
     "minimum_client_version": "1.12.0"
