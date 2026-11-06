@@ -1156,7 +1156,7 @@ async function importFromLinks() {
     for (const [i, job] of jobs.entries()) {
         const { url } = job;
         prog.set(i);
-        // 网易云：按流行歌的方式在线播放（会员歌也行）
+        // 网易云：按流行歌的方式在线播放
         try {
             const r = await addNeteaseLink(job);
             if (r) {
@@ -1535,7 +1535,7 @@ async function subApiChat(messages, maxTokens = 400, waitMs = 180000) {
         status = r.status;
         j = await r.json().catch(() => null);
     } catch (e) {
-        if (ctl.signal.aborted) throw new Error(`等了 ${Math.round(waitMs / 60000)} 分钟还没回，可能是中转站太慢`);
+        if (ctl.signal.aborted) throw new Error(`等了 ${Math.round(waitMs / 60000)} 分钟还没回，可能是接口太慢`);
         throw new Error('酒馆没能转发请求：' + (e.message || e));
     } finally {
         clearTimeout(timer);
@@ -1590,7 +1590,7 @@ async function subApiTags(s) {
     const hit = all[all.length - 1];
     if (!hit) {
         const said = clean.replace(/\s+/g, ' ').trim();
-        // 回得很短，多半是中转站把报错当成回复发回来了（比如账号没有这个模型的权限）
+        // 回得很短，多半是接口把报错当成回复发回来了
         if (said.length < 400) throw new Error(`接口没有给出分析，它回的是：「${said.slice(0, 160)}」`);
         throw new Error('分析写了但没写完，最后的标签没给出来（可能太长被截断了），再试一次通常就好');
     }
@@ -1615,7 +1615,7 @@ async function noApiPopup(reason = '') {
 /** 共享耳机 API 加了也开了，但调用出错：把原因原样告诉你 */
 async function apiErrorPopup(reason) {
     const { Popup } = ctx();
-    const body = `${esc(reason)}<br><br>如果写着没有权限、模型不存在、额度不足，是中转站那边的问题：在设置里的模型下拉框换一个模型，或者去中转站看看账号权限，再点「重新生成全部标签」。<br>这几首歌先没打标签，也可以在歌单里点铅笔手动填。`;
+    const body = `${esc(reason)}<br><br>可以在设置里的模型下拉框换一个模型，再点「重新生成全部标签」。<br>这几首歌先没打标签，也可以在歌单里点铅笔手动填。`;
     if (Popup?.show?.text) await Popup.show.text('共享耳机 API 出错了', body);
     else toast('error', `共享耳机 API 出错了：${reason}`);
 }
@@ -2146,7 +2146,7 @@ function buildSettingsPanel() {
       </select>
       <div class="se-subapi">
         <div class="se-switch-row" id="se_api_on" role="switch" tabindex="0"><b>共享耳机 API（只给这个插件打标签用）</b><i class="se-switch fa-solid fa-toggle-off"></i></div>
-        <input id="se_api_url" class="text_pole" type="url" autocomplete="off" spellcheck="false" placeholder="接口地址，比如 https://api.deepseek.com/v1">
+        <input id="se_api_url" class="text_pole" type="url" autocomplete="off" spellcheck="false" placeholder="接口地址">
         <input id="se_api_key" class="text_pole" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key">
         <div class="flex-container alignitemscenter se-btn-row">
           <input id="se_api_model" class="text_pole" autocomplete="off" spellcheck="false" placeholder="模型名（可以手打）">
@@ -2234,7 +2234,7 @@ function buildSettingsPanel() {
         try {
             const r = await fetch('/api/backends/chat-completions/status', { method: 'POST', headers: await stHeaders(), body: JSON.stringify(subApiBody()) });
             const j = await r.json().catch(() => null);
-            // 各家中转返回的样子不一样：{data:[...]}、{models:[...]}、直接一个数组，元素可能是对象也可能是字符串
+            // 各家接口返回的样子不一样：{data:[...]}、{models:[...]}、直接一个数组，元素可能是对象也可能是字符串
             const list = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.models) ? j.models : [];
             const ids = [...new Set(list.map(x => (typeof x === 'string' ? x : x?.id || x?.name || '')).filter(Boolean))].sort();
             if (!ids.length) throw new Error(j?.error?.message || (j?.error ? '接口拒绝了，检查一下地址和 Key' : '没拿到模型列表，检查一下地址和 Key；也可以直接手打模型名'));
@@ -2248,7 +2248,7 @@ function buildSettingsPanel() {
         if (!subApiReady()) { toast('warning', '接口地址和模型名都要填'); return; }
         try {
             const out = (await subApiChat([{ role: 'user', content: '只回复两个字：收到' }], 200)).replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-            // 有的中转站会把报错当成回复发回来，所以不只看「通没通」，还看它回的是不是「收到」
+            // 有的接口会把报错当成回复发回来，所以不只看「通没通」，还看它回的是不是「收到」
             if (/收到/.test(out)) toast('success', `共享耳机 API 能用，它回复：${out.slice(0, 20)}${settings.apiOn ? '' : '。记得把开关打开'}`);
             else toast('warning', `接口通了，但它没回「收到」，回的是：${out.slice(0, 120)}。如果这是一段报错，说明这个模型用不了，换一个试试`);
         } catch (e) { toast('error', `共享耳机 API 连不上：${e.message}`); }
