@@ -134,3 +134,69 @@ export async function neteaseInfo(id) {
     }
     return null;
 }
+
+// ---------- 网易云歌单 ----------
+// 网页 music.163.com/#/playlist?id=…、手机网页 y.music.163.com/m/playlist?id=…、/playlist/数字 都认
+export function neteasePlaylistId(url) {
+    let u;
+    try { u = new URL(url); } catch { return ''; }
+    if (!/(^|\.)163\.com$/i.test(u.hostname)) return '';
+    const rest = u.pathname + u.search + u.hash;
+    if (!/playlist/i.test(rest)) return '';
+    return rest.match(/[?&]id=(\d+)/)?.[1] || rest.match(/playlist\/(\d+)/)?.[1] || '';
+}
+
+/**
+ * 按歌单 ID 取整张歌单：[{ id, title, artist, pic }]。同样借两个公开的 Meting 接口，一个不行换另一个。
+ * 读不到抛出带原因的错误。
+ */
+export async function neteasePlaylist(id) {
+    const tries = [
+        [`https://api.injahow.cn/meting/?type=playlist&id=${id}`, x => ({ title: x.name, artist: x.artist, url: x.url, pic: x.pic })],
+        [`https://api.i-meto.com/meting/api?server=netease&type=playlist&id=${id}`, x => ({ title: x.title, artist: x.author, url: x.url, pic: x.pic })],
+    ];
+    let empty = false;
+    for (const [url, pick] of tries) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 30000);
+        try {
+            const r = await fetch(url, { signal: ctl.signal });
+            if (!r.ok) continue;
+            const list = await r.json();
+            if (!Array.isArray(list)) continue;
+            if (!list.length) { empty = true; continue; }
+            const out = [];
+            for (const x of list) {
+                const v = pick(x);
+                let sid = '';
+                try { sid = new URL(v.url).searchParams.get('id') || ''; } catch { /* 没有 id 的跳过 */ }
+                if (sid) out.push({ id: sid, title: String(v.title || '').trim(), artist: String(v.artist || '').trim(), pic: v.pic || '' });
+            }
+            if (out.length) return out;
+        } catch { /* 换下一个 */ } finally {
+            clearTimeout(timer);
+        }
+    }
+    throw new Error(empty
+        ? '这个歌单读出来是空的。如果是你自己的歌单，看看是不是设成了私密，要先改成公开'
+        : '读不到这个歌单，可能是私密歌单，或者接口暂时连不上，过一会儿再试');
+}
+
+/** 用 Meting 给的封面链接取封面，不走 GD音乐台，不占它 5 分钟 50 次的额度。拿不到返回 null。 */
+export async function neteaseCover(picUrl) {
+    if (!picUrl) return null;
+    try {
+        let r = await fetch(picUrl);
+        if (!r.ok) return null;
+        // 跳转后的图默认很小（param=90y90），换成大一点的
+        if (/[?&]param=\d+y\d+/.test(r.url)) {
+            const big = await fetch(r.url.replace(/param=\d+y\d+/, 'param=500y500'));
+            if (big.ok) r = big;
+        }
+        const b = await r.blob();
+        return b.type.startsWith('image/') ? b : null;
+    } catch { return null; }
+}
+
+/** 网易云歌曲的音频地址（Meting 跳转），给本地分析用，不占 GD音乐台的额度 */
+export const neteaseAudioUrl = (id) => `https://api.injahow.cn/meting/?server=netease&type=url&id=${id}`;

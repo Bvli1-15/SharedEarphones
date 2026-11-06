@@ -8,7 +8,7 @@ import { readTags, guessFromFilename, normalizeName, parseLyrics } from './parse
 import { listZip, extractZip } from './zip.js';
 import { findLyrics, findCover, searchLyrics } from './online.js';
 import { searchFree, fetchThumb, MOODS } from './free.js';
-import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME, neteaseSongId, isNeteaseShort, neteaseInfo } from './gd.js';
+import { searchGD, resolveGD, fetchGDCover, GD_SOURCES, GD_NAME, neteaseSongId, isNeteaseShort, neteaseInfo, neteasePlaylistId, neteasePlaylist, neteaseCover, neteaseAudioUrl } from './gd.js';
 import { analyzeAudio, tagsByRules, describeAnalysis, MOOD_WORDS, ANALYSIS_VERSION } from './analyze.js';
 import * as db from './db.js';
 
@@ -1053,7 +1053,7 @@ async function handleIncoming(files, intoListId = importTarget) {
     }
 }
 
-async function finishImport(newIds, intoListId, failed = 0) {
+async function finishImport(newIds, intoListId, failed = 0, { tag = true } = {}) {
     if (intoListId) {
         const pl = library.playlists.find(p => p.id === intoListId);
         if (pl) newIds.forEach(id => { if (!pl.songIds.includes(id)) pl.songIds.push(id); });
@@ -1064,7 +1064,7 @@ async function finishImport(newIds, intoListId, failed = 0) {
     if (!settings.songId && library.index.length) await loadSong(library.index[0].id, false);
     if (el.card.dataset.view === 'import') setView(intoListId ? 'list' : 'lists');
     render();
-    if (newIds.length) { enrich(newIds); tagSongs(newIds); }
+    if (newIds.length) { enrich(newIds); if (tag) tagSongs(newIds); }
 }
 
 async function importFromPicker() {
@@ -1113,6 +1113,9 @@ async function importZip(zipFile) {
 async function addNeteaseLink(job) {
     let nid = neteaseSongId(job.url);
     let info = null;
+    if (!nid && isNeteaseShort(job.url) && job.listShare) {
+        throw new Error('网易云歌单的短链接解析不了。在网页版打开这个歌单，复制地址栏里带 playlist?id= 的完整链接再粘');
+    }
     if (!nid && isNeteaseShort(job.url)) {
         // 短链接解不开跳转，用分享文字里的歌名歌手去搜
         if (!job.title) throw new Error('网易云短链接解析不了，把分享时的整段文字一起粘进来，或者在浏览器打开后复制完整链接');
@@ -1135,9 +1138,58 @@ async function addNeteaseLink(job) {
     return { id: await addGDRecord(m), named: !!(info?.title || job.title) };
 }
 
+/** 整张网易云歌单导入：每首按流行歌的方式在线播放，放进一个新歌单（或者正在导入的那个歌单）。 */
+async function importNeteasePlaylist(pid) {
+    const { Popup } = ctx();
+    const tip = window.toastr?.info('正在读网易云歌单…', '', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+    let tracks;
+    try { tracks = await neteasePlaylist(pid); } catch (e) { toast('error', e.message); return; } finally { if (tip) window.toastr.clear(tip); }
+
+    // 目标歌单：从某个歌单里点「导入歌曲到这里」进来的，就放那里；不然新建一个
+    let listId = importTarget;
+    if (!listId) {
+        const name = await Popup.show.input('导入网易云歌单', `读到 ${tracks.length} 首。给新歌单起个名字：`, '网易云歌单');
+        if (name === null || name === false) return;
+        listId = uid();
+        library.playlists.push({ id: listId, name: String(name).trim() || '网易云歌单', songIds: [] });
+    }
+    const pl = library.playlists.find(p => p.id === listId);
+
+    await db.requestPersist();
+    const newIds = [];
+    let dup = 0;
+    const prog = progressToast(tracks.length, '正在导入歌单');
+    for (const [i, t] of tracks.entries()) {
+        prog.set(i);
+        const m = { source: 'netease', id: t.id };
+        const old = library.index.find(s => s.gd && gdKey(s.gd) === gdKey(m));
+        if (old) {   // 歌库里已经有了，只放进歌单
+            dup++;
+            if (pl && !pl.songIds.includes(old.id)) pl.songIds.push(old.id);
+            continue;
+        }
+        Object.assign(m, { title: t.title || `网易云歌曲 ${t.id}`, artist: t.artist, album: '', picId: '' });
+        newIds.push(await addGDRecord(m, await neteaseCover(t.pic)));
+    }
+    prog.set(tracks.length);
+    prog.done();
+    if (dup) toast('info', `${dup} 首歌库里已经有了，直接放进了歌单`);
+    if (newIds.length) toast('info', `${newIds.length} 首网易云的歌按流行歌加进来了，在线播放，没网时放不了`);
+
+    // 歌多的时候先问一句再打标签：每首都要下载一遍来听，用共享耳机 API 的话每首还要调一次接口
+    let tag = true;
+    if (newIds.length > 20) {
+        tag = !!(await Popup.show.confirm('现在打标签吗？',
+            `这次新加了 ${newIds.length} 首。现在就分析、打标签的话，每首都要下载一遍来听` +
+            (settings.tagMode === 'model' ? '，还要各调一次共享耳机 API，会花不少时间' : '') +
+            '。<br><br>选「取消」先不打，之后可以在扩展设置里点「给没有标签的歌生成标签」。'));
+    }
+    await finishImport(newIds, listId, 0, { tag });
+}
+
 async function importFromLinks() {
     const { Popup } = ctx();
-    const text = await Popup.show.input('粘贴链接', '音频文件的直接链接，一行一个。网易云的歌曲链接，或者 App 里「分享 → 复制链接」的整段文字也可以直接粘。', '', { rows: 6 });
+    const text = await Popup.show.input('粘贴链接', '音频文件的直接链接，一行一个。网易云的歌曲链接，或者 App 里「分享 → 复制链接」的整段文字也可以直接粘。网易云歌单要用网页版地址栏里带 playlist?id= 的完整链接，歌单得是公开的。', '', { rows: 6 });
     if (!text) return;
     // 一行一行看：网易云的分享文字长这样「分享某某的单曲《歌名》: https://163cn.tv/xxxx (来自@网易云音乐)」
     const jobs = [];
@@ -1145,9 +1197,15 @@ async function importFromLinks() {
         const urls = line.match(/https?:\/\/[^\s"'<>]+/gi) || [];
         const title = line.match(/《(.+?)》/)?.[1]?.trim() || '';
         const artist = line.match(/分享(.+?)的单曲/)?.[1]?.trim() || '';
-        for (const raw of urls) jobs.push({ url: raw.replace(/[，。,;；)）】]+$/, ''), title, artist });
+        const listShare = /的歌单/.test(line);   // 「分享某某创建的歌单「歌单名」: https://163cn.tv/xxxx」
+        for (const raw of urls) jobs.push({ url: raw.replace(/[，。,;；)）】]+$/, ''), title, artist, listShare });
     }
     if (!jobs.length) { toast('warning', '没找到链接'); return; }
+    // 网易云歌单单独处理：整张读出来，建一个新歌单
+    const listJobs = jobs.filter(j => neteasePlaylistId(j.url));
+    for (const j of listJobs) await importNeteasePlaylist(neteasePlaylistId(j.url));
+    jobs.splice(0, jobs.length, ...jobs.filter(j => !listJobs.includes(j)));
+    if (!jobs.length) return;
     await db.requestPersist();
     const newIds = [];
     const failures = [];
@@ -1398,15 +1456,16 @@ async function toggleGDPreview(i) {
     if (b) b.textContent = '❚❚';
 }
 
-/** 把一首流行歌记进歌库（只记来源和 ID，不下载音频），顺便取封面。返回新 id。 */
-async function addGDRecord(m) {
+/** 把一首流行歌记进歌库（只记来源和 ID，不下载音频），顺便取封面。返回新 id。
+ *  cover 传了（哪怕是 null）就用它，不再去 GD音乐台取，省它的额度。 */
+async function addGDRecord(m, cover) {
     const id = uid();
     library.index.push({
         id, title: m.title, artist: m.artist || '', album: m.album || '', file: m.title,
         hasCover: false, hasLyrics: false, duration: 0, added: Date.now(),
         gd: { source: m.source, id: m.id }, source: `GD音乐台 · ${GD_NAME[m.source] || m.source}`, local: false,
     });
-    const cover = await fetchGDCover(m.source, m.picId);
+    if (cover === undefined) cover = await fetchGDCover(m.source, m.picId);
     if (cover) { await db.putCover(id, cover); songById(id).hasCover = true; }
     return id;
 }
@@ -1631,9 +1690,17 @@ async function audioForAnalysis(s) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 60000); // 连下载带读完一共最多等 1 分钟
     try {
-        const url = s.gd ? await resolveGD(s.gd) : s.url;
-        if (!url) return null;
-        const r = await fetch(url, { signal: ctl.signal });
+        let r = null;
+        // 网易云的歌先走 Meting 取音频，不占 GD音乐台 5 分钟 50 次的额度；不行再走 GD
+        if (s.gd?.source === 'netease') {
+            try { r = await fetch(neteaseAudioUrl(s.gd.id), { signal: ctl.signal }); } catch { r = null; }
+            if (r && (!r.ok || !/audio|octet-stream/i.test(r.headers.get('content-type') || ''))) r = null;
+        }
+        if (!r) {
+            const url = s.gd ? await resolveGD(s.gd) : s.url;
+            if (!url) return null;
+            r = await fetch(url, { signal: ctl.signal });
+        }
         if (!r.ok || /text\/html|json/i.test(r.headers.get('content-type') || '')) return null;
         if (Number(r.headers.get('content-length') || 0) > 25_000_000) return null; // 太大的（无损长曲）不下，手机吃不消
         const b = await r.blob();
