@@ -1497,7 +1497,7 @@ async function stHeaders() {
 
 /** 调共享耳机 API，返回模型回复的文字。等太久（默认 3 分钟）就放弃，不会一直卡着。 */
 async function subApiChat(messages, maxTokens = 400, waitMs = 180000) {
-    let j;
+    let j, status = 0;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), waitMs);
     try {
@@ -1507,16 +1507,20 @@ async function subApiChat(messages, maxTokens = 400, waitMs = 180000) {
             body: JSON.stringify({ ...subApiBody(), model: settings.apiModel.trim(), messages, max_tokens: maxTokens, temperature: 0.7, stream: false }),
             signal: ctl.signal,
         });
-        j = await r.json();
+        status = r.status;
+        j = await r.json().catch(() => null);
     } catch (e) {
         if (ctl.signal.aborted) throw new Error(`等了 ${Math.round(waitMs / 60000)} 分钟还没回，可能是中转站太慢`);
         throw new Error('酒馆没能转发请求：' + (e.message || e));
     } finally {
         clearTimeout(timer);
     }
-    if (j?.error) throw new Error(j.error.message || '共享耳机 API 返回了错误');
+    // 接口报错的样子各家不一样：{error:{message}}、{error:'...'}、{error:true, message}、{message}……都认一下，把原话带出来
+    const errMsg = j?.error?.message || (typeof j?.error === 'string' ? j.error : '') || (j?.error ? j?.message : '') || '';
+    if (errMsg || j?.error) throw new Error(`接口报错：${errMsg || '没给原因'}`);
+    if (status >= 400 || !j) throw new Error(`接口报错（${status || '没有回应'}）${j?.message ? '：' + j.message : ''}`);
     const text = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
-    if (!String(text).trim()) throw new Error('共享耳机 API 没有返回内容');
+    if (!String(text).trim()) throw new Error('接口没有返回内容（可能是这个模型用不了，或者思考太长被截断）');
     return String(text);
 }
 
@@ -1559,7 +1563,12 @@ async function subApiTags(s) {
     const clean = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
     const all = [...clean.matchAll(/\{[^{}]*\}/g)].filter(m => /"tags"/.test(m[0]));
     const hit = all[all.length - 1];
-    if (!hit) throw new Error('共享耳机 API 没有按格式回答（可能分析太长被截断了）');
+    if (!hit) {
+        const said = clean.replace(/\s+/g, ' ').trim();
+        // 回得很短，多半是中转站把报错当成回复发回来了（比如账号没有这个模型的权限）
+        if (said.length < 400) throw new Error(`接口没有给出分析，它回的是：「${said.slice(0, 160)}」`);
+        throw new Error('分析写了但没写完，最后的标签没给出来（可能太长被截断了），再试一次通常就好');
+    }
     const j = JSON.parse(hit[0]);
     const tags = (Array.isArray(j.tags) ? j.tags : []).map(x => String(x).trim()).filter(Boolean).slice(0, 6);
     const mood = MOOD_WORDS.includes(j.mood) ? j.mood : (MOOD_WORDS.find(w => tags.includes(w)) || '');
@@ -1576,6 +1585,14 @@ async function noApiPopup(reason = '') {
     const body = `${reason ? reason + '<br><br>' : ''}这几首歌先没打标签。可以在歌单里点歌名右边的铅笔 → 改歌名，手动填氛围标签和情绪；也可以去扩展设置「让 char 听见」里添加并打开共享耳机 API。`;
     if (Popup?.show?.text) await Popup.show.text('没有添加共享耳机 API', body);
     else toast('warning', '没有添加共享耳机 API，可以在歌单里点铅笔手动添加标签');
+}
+
+/** 共享耳机 API 加了也开了，但调用出错：把原因原样告诉你 */
+async function apiErrorPopup(reason) {
+    const { Popup } = ctx();
+    const body = `${esc(reason)}<br><br>如果写着没有权限、模型不存在、额度不足，是中转站那边的问题：在设置里的模型下拉框换一个模型，或者去中转站看看账号权限，再点「重新生成全部标签」。<br>这几首歌先没打标签，也可以在歌单里点铅笔手动填。`;
+    if (Popup?.show?.text) await Popup.show.text('共享耳机 API 出错了', body);
+    else toast('error', `共享耳机 API 出错了：${reason}`);
 }
 
 /**
@@ -1672,7 +1689,7 @@ async function tagSongs(ids, force = false) {
         ? `《${doneTitles[0]}》的氛围分析写好了，在歌单里点铅笔 → 改歌名 能看到`
         : `${doneTitles.length} 首歌的氛围分析写好了`);
     if (needApi) {
-        if (failReason) noApiPopup(`共享耳机 API 没能打标签：${esc(failReason)}`);
+        if (failReason) apiErrorPopup(failReason);
         else if (!settings.apiOn && subApiReady()) noApiPopup('共享耳机 API 现在是关着的。');
         else noApiPopup();
     }
@@ -2191,8 +2208,10 @@ function buildSettingsPanel() {
     $('#se_api_test').addEventListener('click', async () => {
         if (!subApiReady()) { toast('warning', '接口地址和模型名都要填'); return; }
         try {
-            const out = await subApiChat([{ role: 'user', content: '只回复两个字：收到' }], 20);
-            toast('success', `共享耳机 API 连上了，它回复：${out.trim().slice(0, 20)}${settings.apiOn ? '' : '。记得把开关打开'}`);
+            const out = (await subApiChat([{ role: 'user', content: '只回复两个字：收到' }], 200)).replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            // 有的中转站会把报错当成回复发回来，所以不只看「通没通」，还看它回的是不是「收到」
+            if (/收到/.test(out)) toast('success', `共享耳机 API 能用，它回复：${out.slice(0, 20)}${settings.apiOn ? '' : '。记得把开关打开'}`);
+            else toast('warning', `接口通了，但它没回「收到」，回的是：${out.slice(0, 120)}。如果这是一段报错，说明这个模型用不了，换一个试试`);
         } catch (e) { toast('error', `共享耳机 API 连不上：${e.message}`); }
     });
     $('#se_tag_redo').addEventListener('click', async () => {
