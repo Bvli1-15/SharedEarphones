@@ -1,5 +1,5 @@
 // 联网补全：歌词来自 LRCLIB（免费开放的歌词库），封面来自苹果音乐的公开搜索。
-// 两个服务都允许网页直接访问，不经过任何中转。
+// 两个服务都允许网页直接访问，不经过别的服务器。
 
 const LRCLIB = 'https://lrclib.net/api';
 const ITUNES = 'https://itunes.apple.com/search';
