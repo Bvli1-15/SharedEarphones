@@ -275,6 +275,7 @@ function buildUI() {
       <button class="se-hot se-hot-flip" data-act="flip" aria-label="翻回正面"></button>
       <button class="se-hot se-hot-play" data-act="toggle" aria-label="播放或暂停"></button>
       <svg viewBox="${BACK_VIEWBOX}" aria-label="两个人共用一副耳机">${BACK_SVG}</svg>
+      <svg class="se-notes-layer" viewBox="${BACK_VIEWBOX}" aria-hidden="true"></svg>
       <div class="se-label" data-key="left" contenteditable="plaintext-only" spellcheck="false" style="left:34.8%;top:51.9%"></div>
       <div class="se-label" data-key="right" contenteditable="plaintext-only" spellcheck="false" style="left:65.1%;top:51.9%"></div>
       <textarea class="se-longtext" data-key="long" rows="2" maxlength="60" spellcheck="false" placeholder="点这里写一句话"></textarea>
@@ -296,7 +297,10 @@ function buildUI() {
     el.gq = $('.se-gq', root);
     el.gdRows = $('.se-gd-rows', root);
     el.gdFace = $('.se-gdsearch', root);
-    el.notes = $('#se-notes', root);
+    // 音符挪到单独的一层：耳机图里有滤镜和头像大图，音符和它们画在一起的话，每动一帧都得把整张图重画一遍
+    const oldNotes = $('#se-notes', root);
+    el.notes = oldNotes || document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    $('.se-notes-layer', root).appendChild(el.notes);
     bindUI();
 }
 
@@ -2037,18 +2041,34 @@ function spawnNote(f, s = 0) {
     notes.push({ g, f, t, s, ph: Math.random() * 6.28, tilt: (Math.random() - 0.5) * 16 });
 }
 
+/** 沿着耳机线每隔 1 个单位量一个点存起来，动画时直接查表，不用每帧让浏览器重新算曲线 */
+function samplePath(path) {
+    const len = path.getTotalLength();
+    const n = Math.ceil(len) + 2;
+    const xs = new Float32Array(n), ys = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const pt = path.getPointAtLength(Math.min(i, len)); xs[i] = pt.x; ys[i] = pt.y; }
+    return { len, xs, ys };
+}
+
+function pointOn(f, s) {
+    const i = Math.min(Math.max(Math.floor(s), 0), f.xs.length - 2), t = s - i;
+    return { x: f.xs[i] + (f.xs[i + 1] - f.xs[i]) * t, y: f.ys[i] + (f.ys[i + 1] - f.ys[i]) * t };
+}
+
 function drawNote(n) {
     const p = n.s / n.f.len;
-    const pt = n.f.path.getPointAtLength(n.s);
+    const pt = pointOn(n.f, n.s);
     const a = Math.min(1, p / 0.06, (1 - p) / 0.1);
     const k = NOTE_SCALE * (0.55 + 0.45 * a);
     const bob = Math.sin(noteClock * 3 + n.ph) * 3;
-    n.g.setAttribute('opacity', a.toFixed(3));
+    const op = a.toFixed(2);
+    if (n.op !== op) { n.op = op; n.g.setAttribute('opacity', op); } // 透明度只在变了的时候才改
     n.g.setAttribute('transform', `translate(${pt.x.toFixed(1)} ${(pt.y + bob).toFixed(1)}) rotate(${n.tilt.toFixed(1)}) scale(${k.toFixed(3)}) translate(${-n.t.ax} -40)`);
 }
 
 function noteFrame(ts) {
-    const dt = noteLast === null ? 0 : Math.min(0.05, (ts - noteLast) / 1000);
+    // 按真实经过的时间走：中间卡了一下，音符会直接到它该在的位置，不会被拖慢（切到后台回来时最多补 0.3 秒）
+    const dt = noteLast === null ? 0 : Math.min(0.3, (ts - noteLast) / 1000);
     noteLast = ts;
     const moving = !audio.paused && !matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (moving) {
@@ -2058,7 +2078,7 @@ function noteFrame(ts) {
         const speed = SPEED * Math.sqrt(bpm / 97);
         noteClock += dt;
         beatAcc += dt;
-        if (beatAcc >= beat * 2) { beatAcc -= beat * 2; flows.forEach(f => spawnNote(f)); }
+        while (beatAcc >= beat * 2) { beatAcc -= beat * 2; flows.forEach(f => spawnNote(f, speed * beatAcc)); }
         notes.forEach(n => { n.s += speed * dt; });
     }
     for (let i = notes.length - 1; i >= 0; i--) {
@@ -2072,7 +2092,7 @@ function syncNotesLoop() {
     const visible = el.card && !el.card.classList.contains('se-hidden') && el.card.dataset.view === 'back';
     if (visible && !noteRaf) {
         if (!flows) {
-            flows = ['#se-cable-left', '#se-cable-right'].map(sel => { const p = $(sel, el.card); return { path: p, len: p.getTotalLength() }; });
+            flows = ['#se-cable-left', '#se-cable-right'].map(sel => samplePath($(sel, el.card)));
             for (const f of flows) for (let s = 30; s < f.len - 40; s += SPEED * BEAT * 2) spawnNote(f, s);
         }
         noteLast = null;
